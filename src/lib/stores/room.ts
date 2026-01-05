@@ -1,27 +1,161 @@
-import { writable } from 'svelte/store';
-import type { RoomState } from '../types';
-import { MOCK_PLAYERS } from '../mocks/data';
+import { writable, get } from 'svelte/store';
+import type { RoomState, Player } from '../types';
+import { getSocket, emitWithAck } from './socket';
 
 const initialState: RoomState = {
-  code: 'ABCD',
-  hostId: '1',
+  code: '',
+  hostId: '',
   status: 'waiting',
-  players: MOCK_PLAYERS
+  players: []
 };
 
 function createRoomStore() {
   const { subscribe, set, update } = writable<RoomState>(initialState);
 
+  // Setup socket event listeners
+  function setupListeners() {
+    const socket = getSocket();
+    if (!socket) return;
+
+    socket.on('room:playerJoined', ({ player }: { player: Player }) => {
+      update(s => ({
+        ...s,
+        players: [...s.players, player]
+      }));
+    });
+
+    socket.on('room:playerLeft', ({ playerId, players }: { playerId: string; players: Player[] }) => {
+      update(s => ({
+        ...s,
+        players
+      }));
+    });
+
+    socket.on('room:updated', ({ players }: { players: Player[] }) => {
+      update(s => ({
+        ...s,
+        players
+      }));
+    });
+
+    socket.on('room:hostChanged', ({ hostId }: { hostId: string }) => {
+      update(s => ({
+        ...s,
+        hostId
+      }));
+    });
+  }
+
   return {
     subscribe,
     set,
     update,
-    setRoomCode: (code: string) => update(s => ({ ...s, code })),
-    setStatus: (status: 'waiting' | 'playing') => update(s => ({ ...s, status })),
-    // Mock functionality to update player list
-    updatePlayers: (players: any[]) => update(s => ({ ...s, players }))
+    
+    /**
+     * Initialize socket listeners
+     */
+    init() {
+      setupListeners();
+    },
+
+    /**
+     * Create a new room
+     */
+    async create(code: string): Promise<{ success: boolean; error?: string }> {
+      try {
+        const response = await emitWithAck<{ success: boolean; room: RoomState; error?: string }>(
+          'room:create', 
+          { code }
+        );
+        
+        if (response.room) {
+          set(response.room);
+        }
+        
+        return { success: true };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    /**
+     * Join an existing room
+     */
+    async join(code: string): Promise<{ success: boolean; error?: string }> {
+      try {
+        const response = await emitWithAck<{ success: boolean; room: RoomState; error?: string }>(
+          'room:join',
+          { code }
+        );
+        
+        if (response.room) {
+          set(response.room);
+        }
+        
+        return { success: true };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    /**
+     * Leave current room
+     */
+    async leave(): Promise<void> {
+      try {
+        await emitWithAck('room:leave', {});
+        set(initialState);
+      } catch (error) {
+        console.error('Failed to leave room:', error);
+        set(initialState);
+      }
+    },
+
+    /**
+     * Change team
+     */
+    async changeTeam(team: 'red' | 'blue' | null): Promise<{ success: boolean; error?: string }> {
+      try {
+        await emitWithAck('room:changeTeam', { team });
+        return { success: true };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    /**
+     * Change role
+     */
+    async changeRole(role: 'spymaster' | 'operative'): Promise<{ success: boolean; error?: string }> {
+      try {
+        await emitWithAck('room:changeRole', { role });
+        return { success: true };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    /**
+     * Set room code (for display)
+     */
+    setRoomCode(code: string) {
+      update(s => ({ ...s, code }));
+    },
+
+    /**
+     * Set room status
+     */
+    setStatus(status: 'waiting' | 'playing') {
+      update(s => ({ ...s, status }));
+    },
+
+    /**
+     * Reset room state
+     */
+    reset() {
+      set(initialState);
+    }
   };
 }
 
 export const room = createRoomStore();
-

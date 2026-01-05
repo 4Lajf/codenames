@@ -8,7 +8,7 @@
     onclick
   }: { 
     word: string;
-    type: 'red' | 'blue' | 'neutral' | 'assassin';
+    type: 'red' | 'blue' | 'neutral' | 'assassin' | 'hidden';
     revealed?: boolean;
     showType?: boolean;
     clickable?: boolean;
@@ -25,7 +25,13 @@
     }
   }
 
-  let typeClass = $derived((revealed || showType) ? type : 'unknown');
+  // Determine which type class to show - hidden maps to unknown styling
+  let typeClass = $derived(() => {
+    if (revealed || showType) {
+      return type === 'hidden' ? 'unknown' : type;
+    }
+    return 'unknown';
+  });
   let isRevealedClass = $derived(revealed ? 'revealed' : '');
 </script>
 
@@ -37,7 +43,7 @@
   disabled={(!clickable && !revealed)}
   aria-label={`Card: ${word}`}
 >
-  <div class="card-inner {typeClass} {isRevealedClass}" class:spymaster-view={showType && !revealed}>
+  <div class="card-inner {typeClass()} {isRevealedClass}" class:spymaster-view={showType && !revealed}>
       <div class="card-image-area">
           {#if revealed && type === 'assassin'}
               <div class="overlay-icon">☠️</div>

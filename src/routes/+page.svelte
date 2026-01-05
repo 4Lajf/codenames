@@ -1,7 +1,9 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
   import { onMount } from 'svelte';
-  import { player } from '$lib/stores/player';
+  import { session } from '$lib/stores/session';
+  import { room } from '$lib/stores/room';
+  import { socketConnected, socketError } from '$lib/stores/socket';
   
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
@@ -13,8 +15,10 @@
   let nickname = $state('');
   let customWords = $state('');
   let wordList = $state<string[]>([]);
+  let isLoading = $state(false);
+  let error = $state<string | null>(null);
 
-  // Load saved nickname if available
+  // Load saved nickname and word list
   onMount(async () => {
     const savedNickname = localStorage.getItem('codenames_nickname');
     if (savedNickname) {
@@ -30,33 +34,111 @@
     }
   });
 
-  function handleCreateRoom() {
-    if (!nickname.trim()) return;
-    // Save nickname to localStorage first
+  async function initSession(): Promise<boolean> {
+    if (!nickname.trim()) {
+      error = 'Please enter a nickname';
+      return false;
+    }
+
+    isLoading = true;
+    error = null;
+
+    const success = await session.init(nickname.trim());
+    
+    if (!success) {
+      error = 'Failed to create session. Please try again.';
+      isLoading = false;
+      return false;
+    }
+
+    // Wait for socket connection
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    if (!$socketConnected) {
+      error = 'Failed to connect to server. Please try again.';
+      isLoading = false;
+      return false;
+    }
+
+    // Initialize room store listeners
+    room.init();
+
+    return true;
+  }
+
+  async function handleCreateRoom() {
+    const sessionOk = await initSession();
+    if (!sessionOk) return;
+
+    // Save nickname to localStorage
     localStorage.setItem('codenames_nickname', nickname.trim());
-    player.updateNickname(nickname);
+    
     // Store custom words if provided
     if (customWords.trim()) {
       localStorage.setItem('codenames_custom_words', customWords.trim());
     }
     
+    // Generate room code from word list
     let newCode;
     if (wordList.length > 0) {
       newCode = wordList[Math.floor(Math.random() * wordList.length)].toUpperCase();
     } else {
-      // Fallback to random 6 letters if word list failed to load
       newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     }
     
+    // Create room via socket
+    const result = await room.create(newCode);
+    
+    if (!result.success) {
+      error = result.error || 'Failed to create room';
+      isLoading = false;
+      return;
+    }
+
+    isLoading = false;
     goto(`/room/${newCode}`);
   }
 
-  function handleJoinRoom() {
-    if (!nickname.trim() || !roomCode.trim()) return;
-    // Save nickname to localStorage first
+  async function handleJoinRoom() {
+    if (!roomCode.trim()) {
+      error = 'Please enter a room code';
+      return;
+    }
+
+    const sessionOk = await initSession();
+    if (!sessionOk) return;
+
+    // Save nickname
     localStorage.setItem('codenames_nickname', nickname.trim());
-    player.updateNickname(nickname);
-    goto(`/room/${roomCode.toUpperCase().trim()}`);
+
+    const code = roomCode.toUpperCase().trim();
+
+    // First check if room exists
+    try {
+      const response = await fetch(`/api/room/${code}`);
+      if (!response.ok) {
+        const data = await response.json();
+        error = data.error || 'Room not found';
+        isLoading = false;
+        return;
+      }
+    } catch (e) {
+      error = 'Failed to check room. Please try again.';
+      isLoading = false;
+      return;
+    }
+
+    // Join room via socket
+    const result = await room.join(code);
+    
+    if (!result.success) {
+      error = result.error || 'Failed to join room';
+      isLoading = false;
+      return;
+    }
+
+    isLoading = false;
+    goto(`/room/${code}`);
   }
 </script>
 
@@ -72,6 +154,12 @@
       </Card.Header>
 
       <Card.Content class="space-y-6 px-8 pb-10">
+        {#if error}
+          <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg text-sm">
+            {error}
+          </div>
+        {/if}
+
         <div class="space-y-4">
           <div class="text-center text-gray-600">
             To enter the room, choose a nickname.
@@ -81,15 +169,20 @@
             type="text" 
             bind:value={nickname} 
             placeholder="Enter your nickname" 
+            disabled={isLoading}
             class="h-12 text-center text-lg border-gray-300 rounded-full focus-visible:ring-offset-0 focus-visible:ring-yellow-400 focus-visible:border-yellow-400"
           />
           
           <Button 
             onclick={handleCreateRoom}
-            disabled={!nickname.trim()}
-            class="w-full h-12 text-lg font-bold bg-[#FFD700] hover:bg-[#FFC000] text-black rounded-full shadow-md transition-transform hover:scale-[1.02] active:scale-[0.98]"
+            disabled={!nickname.trim() || isLoading}
+            class="w-full h-12 text-lg font-bold bg-[#FFD700] hover:bg-[#FFC000] text-black rounded-full shadow-md transition-transform hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Create Room
+            {#if isLoading}
+              Creating...
+            {:else}
+              Create Room
+            {/if}
           </Button>
         </div>
 
@@ -111,15 +204,20 @@
                     bind:value={roomCode}
                     placeholder="Room Word (e.g. ANIMAL)" 
                     maxlength={20}
+                    disabled={isLoading}
                     class="h-10 text-center uppercase tracking-widest border-gray-300 rounded-lg"
                   />
                  <Button 
                     onclick={handleJoinRoom}
-                    disabled={!nickname.trim() || !roomCode.trim()}
+                    disabled={!nickname.trim() || !roomCode.trim() || isLoading}
                     variant="secondary"
                     class="h-10 px-6 font-bold"
                  >
-                    Join
+                    {#if isLoading}
+                      ...
+                    {:else}
+                      Join
+                    {/if}
                  </Button>
              </div>
         </div>
@@ -131,6 +229,7 @@
               bind:value={customWords}
               placeholder="Enter custom words here..."
               rows={4}
+              disabled={isLoading}
               class="text-sm border-gray-200 resize-none"
             />
             <p class="text-xs text-gray-400">Minimum 25 words required for a game. Leave empty to use default words.</p>
@@ -138,6 +237,13 @@
 
       </Card.Content>
     </Card.Root>
+
+    <!-- Connection Status -->
+    {#if $socketError}
+      <div class="text-center text-red-300 text-sm">
+        Connection error: {$socketError}
+      </div>
+    {/if}
 
     <!-- Footer -->
     <div class="text-center text-white/80 text-sm">

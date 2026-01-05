@@ -5,8 +5,12 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
+		"dev:socket": "tsx --watch server.dev.js",
+		"dev:full": "concurrently \"npm run dev\" \"npm run dev:socket\"",
+		"dev:server": "vite build && node server.js",
 		"build": "vite build",
 		"preview": "vite preview",
+		"start": "node server.js",
 		"prepare": "svelte-kit sync || echo ''",
 		"format": "prettier --write .",
 		"lint": "prettier --check . && eslint ."
@@ -28,6 +32,7 @@
 		"@types/uuid": "^10.0.0",
 		"bits-ui": "^2.15.3",
 		"clsx": "^2.1.1",
+		"concurrently": "^9.2.1",
 		"embla-carousel-svelte": "^8.6.0",
 		"eslint": "^9.39.1",
 		"eslint-config-prettier": "^10.1.8",

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from '$app/stores';
-  import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
+  import { onMount, onDestroy } from 'svelte';
   
   import Board from '$lib/components/Board.svelte';
   import TeamPanel from '$lib/components/TeamPanel.svelte';
@@ -12,28 +13,96 @@
   
   import * as Card from "$lib/components/ui/card";
 
-  import { game, isMyTurn, canGuess, canGiveClue, visibleCards } from '$lib/stores/game';
-  import { player } from '$lib/stores/player';
+  import { session } from '$lib/stores/session';
+  import { game, isMyTurn, canGuess, canGiveClue, visibleCards, currentPlayer } from '$lib/stores/game';
   import { room } from '$lib/stores/room';
+  import { socketConnected, getSocket } from '$lib/stores/socket';
+  import { playerActions } from '$lib/stores/player';
 
   let roomCode = $page.params.code;
   let showNickname = $state(false);
   let showPlayers = $state(false);
+  let isStarting = $state(false);
+  let error = $state<string | null>(null);
 
-  onMount(() => {
-    room.setRoomCode(roomCode);
-    // Check if nickname already exists in store or localStorage
-    const savedName = localStorage.getItem('codenames_nickname');
-    if (savedName) {
-      player.updateNickname(savedName);
-      showNickname = false;
-    } else if (!$player.nickname || $player.nickname === 'You') {
-      // Only show dialog if no nickname is set or it's still the default
+  // Initialize on mount
+  onMount(async () => {
+    // Check if session exists
+    const savedNickname = localStorage.getItem('codenames_nickname');
+    const savedToken = localStorage.getItem('codenames_token');
+
+    if (!savedToken || !savedNickname) {
+      // Need to set nickname first
       showNickname = true;
-    } else {
-      showNickname = false;
+      return;
+    }
+
+    // Initialize session if not already
+    if (!$session.isAuthenticated) {
+      const success = await session.init(savedNickname);
+      if (!success) {
+        showNickname = true;
+        return;
+      }
+
+      // Wait for socket connection
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    // Initialize stores
+    room.init();
+    game.init();
+
+    // If not in room, try to join
+    if (!$room.code || $room.code !== roomCode) {
+      await joinOrCreateRoom();
     }
   });
+
+  async function joinOrCreateRoom() {
+    // First check if room exists
+    try {
+      const response = await fetch(`/api/room/${roomCode}`);
+      
+      if (response.ok) {
+        // Room exists, join it
+        const result = await room.join(roomCode);
+        if (!result.success) {
+          error = result.error || 'Failed to join room';
+        }
+      } else {
+        // Room doesn't exist, create it
+        const result = await room.create(roomCode);
+        if (!result.success) {
+          error = result.error || 'Failed to create room';
+        }
+      }
+    } catch (e) {
+      error = 'Failed to connect to server';
+    }
+  }
+
+  async function handleNicknameSubmit(name: string) {
+    showNickname = false;
+    localStorage.setItem('codenames_nickname', name);
+    
+    // Initialize session with nickname
+    const success = await session.init(name);
+    if (!success) {
+      error = 'Failed to create session';
+      return;
+    }
+
+    // Wait for socket
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Initialize stores
+    room.init();
+    game.init();
+
+    // Join or create room
+    await joinOrCreateRoom();
+  }
 
   // Derived state for UI
   let statusMessage = $derived(getStatusMessage($game));
@@ -41,6 +110,8 @@
   let bluePlayers = $derived($room.players.filter(p => p.team === 'blue'));
   let redScore = $derived($game.scores.red);
   let blueScore = $derived($game.scores.blue);
+  let isHost = $derived($room.hostId === $session.playerId);
+  let myPlayer = $derived($room.players.find(p => p.id === $session.playerId));
 
   function getStatusMessage(state: any) {
     if (state.status === 'finished') {
@@ -48,59 +119,112 @@
     }
     if (state.status === 'playing') {
       const turnMsg = state.currentTurn === 'red' ? 'Red Team is playing' : 'Blue Team is playing';
-      if (state.clue) return `${turnMsg}, guess! (${state.guessesRemaining} left)`;
-      return `${turnMsg}, wait for your turn...`;
+      if (state.clue) return `${turnMsg} - guess! (${state.guessesRemaining} left)`;
+      return `${turnMsg} - waiting for clue...`;
     }
     return 'Waiting for game to start...';
   }
 
-  function handleCardClick(index: number) {
+  async function handleCardClick(index: number) {
     if ($canGuess) {
-      game.revealCard(index);
+      const result = await game.revealCard(index);
+      if (!result.success) {
+        error = result.error || 'Failed to reveal card';
+      }
     }
   }
 
-  function handleClueSubmit(data: {word: string, count: number}) {
+  async function handleClueSubmit(data: {word: string, count: number}) {
     if ($canGiveClue) {
-      game.giveClue(data.word, data.count);
+      const result = await game.giveClue(data.word, data.count);
+      if (!result.success) {
+        error = result.error || 'Failed to give clue';
+      }
     }
   }
 
-  function handleJoinTeam(team: 'red' | 'blue') {
-    player.joinTeam(team, 'operative');
+  async function handleJoinTeam(team: 'red' | 'blue') {
+    const success = await playerActions.joinTeam(team, 'operative');
+    if (!success) {
+      error = 'Failed to join team';
+    }
   }
 
-  function handleBecomeSpymaster(team: 'red' | 'blue') {
-    player.joinTeam(team, 'spymaster');
+  async function handleBecomeSpymaster(team: 'red' | 'blue') {
+    const success = await playerActions.joinTeam(team, 'spymaster');
+    if (!success) {
+      error = 'Failed to become spymaster (role may be taken)';
+    }
   }
-  
-  function handleNicknameSubmit(name: string) {
-    player.updateNickname(name);
-    showNickname = false;
+
+  async function handleStartGame() {
+    if (!isHost) return;
+    
+    isStarting = true;
+    error = null;
+
+    const result = await game.start();
+    
+    if (!result.success) {
+      error = result.error || 'Failed to start game';
+    } else {
+      room.setStatus('playing');
+    }
+    
+    isStarting = false;
+  }
+
+  async function handleEndTurn() {
+    const result = await game.endTurn();
+    if (!result.success) {
+      error = result.error || 'Failed to end turn';
+    }
+  }
+
+  function handleLeaveRoom() {
+    room.leave();
+    goto('/');
   }
 </script>
 
 <div class="h-screen flex flex-col overflow-hidden bg-codenames-orange">
   <!-- Top Header Bar -->
   <header class="h-[40px] flex justify-between items-center px-4 z-10">
-      <div class="flex items-center">
+      <div class="flex items-center gap-2">
           <button 
             class="bg-yellow-400 text-black hover:bg-yellow-500 rounded-full font-bold shadow-md px-4 py-1.5 text-sm"
             onclick={() => showPlayers = true}
           >
             Players 👤 {$room.players.length}
           </button>
+          <button 
+            class="bg-gray-600 text-white hover:bg-gray-700 rounded-full font-medium shadow-md px-3 py-1.5 text-sm"
+            onclick={handleLeaveRoom}
+          >
+            Leave
+          </button>
       </div>
       <div class="flex items-center gap-2">
+          {#if !$socketConnected}
+            <span class="text-red-300 text-sm">Disconnected</span>
+          {/if}
           <div class="bg-orange-500 text-white rounded-full px-4 py-1.5 text-sm font-bold shadow-md">
-            {$player.nickname} 👤
+            {$session.nickname || 'Guest'} 👤
           </div>
       </div>
   </header>
 
-  {#if $room.status === 'waiting'}
+  {#if error}
+    <div class="mx-4 mt-2 bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded-lg text-sm flex justify-between items-center">
+      <span>{error}</span>
+      <button onclick={() => error = null} class="text-red-700 font-bold">×</button>
+    </div>
+  {/if}
+
+  {#if $room.status === 'waiting' || $game.status === 'lobby'}
     <div class="p-8 text-center text-white overflow-auto flex-1 flex flex-col items-center">
-      <h1 class="text-4xl font-bold mb-8 drop-shadow-md">Room {roomCode}</h1>
+      <h1 class="text-4xl font-bold mb-2 drop-shadow-md">Room: {roomCode}</h1>
+      <p class="text-white/70 mb-8">Share this code with friends to join!</p>
       
       <div class="flex flex-wrap justify-center gap-8 mb-8 w-full max-w-4xl">
         <!-- Red Team Lobby -->
@@ -109,40 +233,74 @@
              <Card.Title class="text-white text-center">Red Team</Card.Title>
           </Card.Header>
           <Card.Content class="p-4 space-y-3">
-             <button class="w-full bg-red-800/80 text-white hover:bg-red-700 px-4 py-2 rounded-md transition-colors font-medium" onclick={() => handleJoinTeam('red')}>
-               Join as Operative
+             <button 
+               class="w-full bg-red-800/80 text-white hover:bg-red-700 px-4 py-2 rounded-md transition-colors font-medium disabled:opacity-50" 
+               onclick={() => handleJoinTeam('red')}
+               disabled={myPlayer?.team === 'red'}
+             >
+               {myPlayer?.team === 'red' && myPlayer?.role === 'operative' ? '✓ Operative' : 'Join as Operative'}
              </button>
-             <button class="w-full bg-red-800/80 text-white hover:bg-red-700 px-4 py-2 rounded-md transition-colors font-medium" onclick={() => handleBecomeSpymaster('red')}>
-               Become Spymaster
+             <button 
+               class="w-full bg-red-800/80 text-white hover:bg-red-700 px-4 py-2 rounded-md transition-colors font-medium disabled:opacity-50" 
+               onclick={() => handleBecomeSpymaster('red')}
+               disabled={myPlayer?.team === 'red' && myPlayer?.role === 'spymaster'}
+             >
+               {myPlayer?.team === 'red' && myPlayer?.role === 'spymaster' ? '✓ Spymaster' : 'Become Spymaster'}
              </button>
              <div class="mt-4 pt-4 border-t border-white/10">
-               <PlayerList players={redPlayers} currentPlayerId={$player.id} />
+               <PlayerList players={redPlayers} currentPlayerId={$session.playerId || ''} />
              </div>
           </Card.Content>
         </Card.Root>
 
         <!-- Blue Team Lobby -->
-        <Card.Root class="w-[300px] bg-red-950/80 border-0 text-white overflow-hidden">
+        <Card.Root class="w-[300px] bg-blue-950/80 border-0 text-white overflow-hidden">
           <Card.Header class="bg-blue-800 py-3">
              <Card.Title class="text-white text-center">Blue Team</Card.Title>
           </Card.Header>
           <Card.Content class="p-4 space-y-3">
-             <button class="w-full bg-blue-800/80 text-white hover:bg-blue-700 px-4 py-2 rounded-md transition-colors font-medium" onclick={() => handleJoinTeam('blue')}>
-               Join as Operative
+             <button 
+               class="w-full bg-blue-800/80 text-white hover:bg-blue-700 px-4 py-2 rounded-md transition-colors font-medium disabled:opacity-50" 
+               onclick={() => handleJoinTeam('blue')}
+               disabled={myPlayer?.team === 'blue'}
+             >
+               {myPlayer?.team === 'blue' && myPlayer?.role === 'operative' ? '✓ Operative' : 'Join as Operative'}
              </button>
-             <button class="w-full bg-blue-800/80 text-white hover:bg-blue-700 px-4 py-2 rounded-md transition-colors font-medium" onclick={() => handleBecomeSpymaster('blue')}>
-               Become Spymaster
+             <button 
+               class="w-full bg-blue-800/80 text-white hover:bg-blue-700 px-4 py-2 rounded-md transition-colors font-medium disabled:opacity-50" 
+               onclick={() => handleBecomeSpymaster('blue')}
+               disabled={myPlayer?.team === 'blue' && myPlayer?.role === 'spymaster'}
+             >
+               {myPlayer?.team === 'blue' && myPlayer?.role === 'spymaster' ? '✓ Spymaster' : 'Become Spymaster'}
              </button>
              <div class="mt-4 pt-4 border-t border-white/10">
-               <PlayerList players={bluePlayers} currentPlayerId={$player.id} />
+               <PlayerList players={bluePlayers} currentPlayerId={$session.playerId || ''} />
              </div>
           </Card.Content>
         </Card.Root>
       </div>
       
-      <button class="px-12 py-4 text-xl bg-green-600 hover:bg-green-700 text-white font-bold shadow-lg rounded-lg transform transition-transform hover:scale-105" onclick={() => room.setStatus('playing')}>
-        Start Game
-      </button>
+      {#if isHost}
+        <button 
+          class="px-12 py-4 text-xl bg-green-600 hover:bg-green-700 text-white font-bold shadow-lg rounded-lg transform transition-transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed" 
+          onclick={handleStartGame}
+          disabled={isStarting || redPlayers.length < 2 || bluePlayers.length < 2}
+        >
+          {#if isStarting}
+            Starting...
+          {:else}
+            Start Game
+          {/if}
+        </button>
+        {#if redPlayers.length < 2 || bluePlayers.length < 2}
+          <p class="text-white/70 mt-2 text-sm">Need at least 2 players per team to start</p>
+        {/if}
+        {#if !redPlayers.some(p => p.role === 'spymaster') || !bluePlayers.some(p => p.role === 'spymaster')}
+          <p class="text-white/70 mt-1 text-sm">Each team needs a spymaster</p>
+        {/if}
+      {:else}
+        <p class="text-white/70">Waiting for host to start the game...</p>
+      {/if}
     </div>
   {:else}
     <div class="flex-1 relative px-4 sm:px-8 py-2 flex flex-col min-h-0">
@@ -156,7 +314,7 @@
           {#if $canGuess && $game.guessesRemaining > 0}
              <button 
                 class="ml-4 font-bold shadow-md animate-pulse bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md" 
-                onclick={() => game.endTurn()}
+                onclick={handleEndTurn}
              >
                 End Turn
              </button>
@@ -244,6 +402,9 @@
               <div class="flex items-center justify-between p-3 rounded-lg bg-gray-50 border border-gray-200">
                 <div class="flex items-center gap-2">
                   <span class="font-medium text-gray-800">{p.nickname}</span>
+                  {#if p.id === $room.hostId}
+                    <span class="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700 font-medium">Host</span>
+                  {/if}
                 </div>
                 <div class="flex items-center gap-2">
                   {#if p.team}
