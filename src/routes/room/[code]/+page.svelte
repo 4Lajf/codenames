@@ -1,7 +1,10 @@
 <script lang="ts">
   import { page } from '$app/stores';
   import { goto } from '$app/navigation';
+  import { browser } from '$app/environment';
   import { onMount, onDestroy } from 'svelte';
+  import { scale } from 'svelte/transition';
+  import { Shuffle, Crown } from '@lucide/svelte';
   
   import Board from '$lib/components/Board.svelte';
   import TeamPanel from '$lib/components/TeamPanel.svelte';
@@ -22,8 +25,10 @@
   let roomCode = $page.params.code;
   let showNickname = $state(false);
   let showPlayers = $state(false);
-  let isStarting = $state(false);
+  let showProfileMenu = $state(false);
+  let isResetting = $state(false);
   let error = $state<string | null>(null);
+  let didRefreshOnStatus = $state(false);
 
   // Initialize on mount
   onMount(async () => {
@@ -60,6 +65,8 @@
   });
 
   async function joinOrCreateRoom() {
+    if (!browser) return;
+    
     // First check if room exists
     try {
       const response = await fetch(`/api/room/${roomCode}`);
@@ -69,16 +76,27 @@
         const result = await room.join(roomCode);
         if (!result.success) {
           error = result.error || 'Failed to join room';
+          return;
         }
       } else {
         // Room doesn't exist, create it
         const result = await room.create(roomCode);
         if (!result.success) {
           error = result.error || 'Failed to create room';
+          return;
         }
+        // Server now auto-starts the game on creation
+      }
+
+      // Always refresh game state to get the cards if room is playing
+      if ($room.status === 'playing') {
+        await game.refresh();
+        didRefreshOnStatus = true;
       }
     } catch (e) {
-      error = 'Failed to connect to server';
+      if (browser) {
+        error = 'Failed to connect to server';
+      }
     }
   }
 
@@ -108,21 +126,59 @@
   let statusMessage = $derived(getStatusMessage($game));
   let redPlayers = $derived($room.players.filter(p => p.team === 'red'));
   let bluePlayers = $derived($room.players.filter(p => p.team === 'blue'));
+  let unassignedPlayers = $derived($room.players.filter(p => p.team === null));
   let redScore = $derived($game.scores.red);
   let blueScore = $derived($game.scores.blue);
   let isHost = $derived($room.hostId === $session.playerId);
   let myPlayer = $derived($room.players.find(p => p.id === $session.playerId));
+  let cardMarkers = $derived($game.cardMarkers || {});
+
+  let showCluePopup = $state(false);
+  let lastClue = $state<{word: string, count: number} | null>(null);
+
+  $effect(() => {
+    // Detect new clue for popup
+    if ($game.clue) {
+      const isNew = !lastClue || $game.clue.word !== lastClue.word || $game.clue.count !== lastClue.count;
+      if (isNew) {
+        lastClue = $game.clue;
+        showCluePopup = true;
+        setTimeout(() => showCluePopup = false, 3000);
+      }
+    } else {
+      lastClue = null;
+    }
+  });
+
+  let bgClass = $derived.by(() => {
+    // Always use team-based background (solid, subtle)
+    if (myPlayer?.team === 'red') return 'bg-[#5a1a1a]';
+    if (myPlayer?.team === 'blue') return 'bg-[#1a2f4a]';
+    
+    // Default to dimmed red for spectators or unassigned
+    return 'bg-[#5a1a1a]';
+  });
+
+  let headerBgClass = $derived.by(() => {
+    // Team-based header colors (check team first)
+    if (myPlayer?.team === 'blue') return 'bg-blue-800/50';
+    if (myPlayer?.team === 'red') return 'bg-red-800/50';
+    // Default for spectators or unassigned
+    return 'bg-red-900/40';
+  });
 
   function getStatusMessage(state: any) {
     if (state.status === 'finished') {
       return state.winner === 'red' ? 'Red Team Wins!' : 'Blue Team Wins!';
     }
     if (state.status === 'playing') {
-      const turnMsg = state.currentTurn === 'red' ? 'Red Team is playing' : 'Blue Team is playing';
+      const team = state.currentTurn;
+      if (!team) return 'Waiting for game...';
+      const turnMsg = team === 'red' ? 'Red Team is playing' : 'Blue Team is playing';
       if (state.clue) return `${turnMsg} - guess! (${state.guessesRemaining} left)`;
       return `${turnMsg} - waiting for clue...`;
     }
-    return 'Waiting for game to start...';
+    return 'Game is starting...';
   }
 
   async function handleCardClick(index: number) {
@@ -131,6 +187,16 @@
       if (!result.success) {
         error = result.error || 'Failed to reveal card';
       }
+    }
+  }
+
+  async function handleCardMark(index: number) {
+    // Only allow marking if in a team
+    if (!myPlayer?.team) return;
+    
+    const result = await game.markCard(index);
+    if (!result.success) {
+      error = result.error || 'Failed to mark card';
     }
   }
 
@@ -143,35 +209,11 @@
     }
   }
 
-  async function handleJoinTeam(team: 'red' | 'blue') {
-    const success = await playerActions.joinTeam(team, 'operative');
+  async function handleChangeRole(team: 'red' | 'blue', role: 'operative' | 'spymaster') {
+    const success = await playerActions.joinTeam(team, role);
     if (!success) {
-      error = 'Failed to join team';
+      error = `Failed to change to ${role}`;
     }
-  }
-
-  async function handleBecomeSpymaster(team: 'red' | 'blue') {
-    const success = await playerActions.joinTeam(team, 'spymaster');
-    if (!success) {
-      error = 'Failed to become spymaster (role may be taken)';
-    }
-  }
-
-  async function handleStartGame() {
-    if (!isHost) return;
-    
-    isStarting = true;
-    error = null;
-
-    const result = await game.start();
-    
-    if (!result.success) {
-      error = result.error || 'Failed to start game';
-    } else {
-      room.setStatus('playing');
-    }
-    
-    isStarting = false;
   }
 
   async function handleEndTurn() {
@@ -181,22 +223,144 @@
     }
   }
 
+  async function handleResetGame() {
+    if (!isHost) return;
+    
+    isResetting = true;
+    error = null;
+
+    const result = await game.resetGame();
+    
+    if (!result.success) {
+      error = result.error || 'Failed to reset game';
+    }
+    
+    isResetting = false;
+  }
+
   function handleLeaveRoom() {
     room.leave();
     goto('/');
   }
+
+  async function handleRandomizeTeams() {
+    if (!isHost) return;
+    
+    const result = await room.randomizeTeams();
+    if (!result.success) {
+      error = result.error || 'Failed to randomize teams';
+    }
+  }
+
+  async function handleTransferHost(playerId: string) {
+    if (!isHost) return;
+    
+    const result = await room.transferHost(playerId);
+    if (!result.success) {
+      error = result.error || 'Failed to transfer host';
+    }
+  }
+
+  async function handleBecomeSpectator() {
+    const success = await playerActions.leaveTeam();
+    if (!success) {
+      error = 'Failed to become spectator';
+    }
+  }
+
+  // Close players dropdown when clicking outside
+  function handleClickOutside(event: MouseEvent) {
+    const target = event.target as HTMLElement;
+    if (showPlayers && !target.closest('.players-dropdown-container')) {
+      showPlayers = false;
+    }
+  }
+
+  // If room status flips to playing/finished (e.g. host starts), ensure we load game state
+  $effect(() => {
+    if (!didRefreshOnStatus && $room.status !== 'waiting' && $game.status === 'lobby') {
+      didRefreshOnStatus = true;
+      game.refresh();
+    }
+  });
 </script>
 
-<div class="h-screen flex flex-col overflow-hidden bg-codenames-orange">
+<svelte:window onclick={handleClickOutside} />
+
+<div class={`h-screen flex flex-col overflow-hidden transition-colors duration-700 ease-in-out ${bgClass}`}>
   <!-- Top Header Bar -->
-  <header class="h-[40px] flex justify-between items-center px-4 z-10">
+  <header class={`h-[40px] flex justify-between items-center px-4 z-30 backdrop-blur-sm transition-colors duration-700 ease-in-out ${headerBgClass}`}>
       <div class="flex items-center gap-2">
-          <button 
-            class="bg-yellow-400 text-black hover:bg-yellow-500 rounded-full font-bold shadow-md px-4 py-1.5 text-sm"
-            onclick={() => showPlayers = true}
-          >
-            Players 👤 {$room.players.length}
-          </button>
+          <!-- Players dropdown -->
+          <div class="relative players-dropdown-container">
+            <button 
+              class="bg-yellow-400 text-black hover:bg-yellow-500 rounded-full font-bold shadow-md px-4 py-1.5 text-sm"
+              onclick={() => showPlayers = !showPlayers}
+            >
+              Players 👤 {$room.players.length}
+            </button>
+            
+            {#if showPlayers}
+              <div 
+                class="absolute left-0 top-full mt-2 w-80 bg-white rounded-xl shadow-xl border border-black/10 overflow-hidden z-50"
+              >
+                <!-- Randomize teams button at top -->
+                {#if isHost}
+                  <button 
+                    class="w-full px-4 py-3 bg-purple-600 hover:bg-purple-700 text-white font-bold text-sm flex items-center justify-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    onclick={handleRandomizeTeams}
+                    disabled={$room.players.length < 4}
+                  >
+                    <Shuffle size={16} />
+                    Randomize Teams
+                    {#if $room.players.length < 4}
+                      <span class="text-xs opacity-70">(need 4+)</span>
+                    {/if}
+                  </button>
+                {/if}
+                
+                <div class="px-3 py-2 text-xs font-semibold text-gray-500 bg-gray-50 border-b border-gray-100">
+                  All Players ({$room.players.length})
+                </div>
+                
+                <div class="max-h-80 overflow-y-auto">
+                  {#each $room.players as p (p.id)}
+                    <div class="flex items-center justify-between px-3 py-2 hover:bg-gray-50 border-b border-gray-100 last:border-b-0">
+                      <div class="flex items-center gap-2 min-w-0">
+                        <span class="font-medium text-gray-800 truncate">{p.nickname}</span>
+                        {#if p.id === $room.hostId}
+                          <Crown size={14} class="text-yellow-500 shrink-0" />
+                        {/if}
+                      </div>
+                      <div class="flex items-center gap-1.5 shrink-0">
+                        {#if p.team}
+                          <span class="text-xs px-2 py-0.5 rounded-full font-medium {p.team === 'red' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}">
+                            {p.team === 'red' ? 'Red' : 'Blue'}
+                          </span>
+                        {:else}
+                          <span class="text-xs px-2 py-0.5 rounded-full font-medium bg-gray-100 text-gray-600">
+                            Unassigned
+                          </span>
+                        {/if}
+                        {#if p.role === 'spymaster'}
+                          <span class="text-xs">🕵️</span>
+                        {/if}
+                        {#if isHost && p.id !== $room.hostId}
+                          <button 
+                            class="text-xs px-2 py-0.5 rounded bg-yellow-500 hover:bg-yellow-600 text-white font-medium transition-colors"
+                            onclick={() => handleTransferHost(p.id)}
+                          >
+                            👑
+                          </button>
+                        {/if}
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            {/if}
+          </div>
+          
           <button 
             class="bg-gray-600 text-white hover:bg-gray-700 rounded-full font-medium shadow-md px-3 py-1.5 text-sm"
             onclick={handleLeaveRoom}
@@ -208,8 +372,59 @@
           {#if !$socketConnected}
             <span class="text-red-300 text-sm">Disconnected</span>
           {/if}
-          <div class="bg-orange-500 text-white rounded-full px-4 py-1.5 text-sm font-bold shadow-md">
-            {$session.nickname || 'Guest'} 👤
+          <div class="relative">
+            <button
+              class="bg-orange-500 text-white rounded-full px-4 py-1.5 text-sm font-bold shadow-md hover:bg-orange-600 transition-colors"
+              onclick={() => showProfileMenu = !showProfileMenu}
+            >
+              {$session.nickname || 'Guest'} 👤
+            </button>
+
+            {#if showProfileMenu}
+              <div
+                class="absolute right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-black/10 overflow-hidden z-50"
+                role="menu"
+              >
+                <div class="px-3 py-2 text-xs font-semibold text-gray-500 bg-gray-50 border-b border-gray-100">
+                  Team / Role (anytime)
+                </div>
+
+                <button
+                  class="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 transition-colors"
+                  onclick={async () => { await handleBecomeSpectator(); showProfileMenu = false; }}
+                >
+                  Spectator {myPlayer?.team === null ? '✓' : ''}
+                </button>
+
+                <div class="px-3 pt-2 pb-1 text-[11px] font-semibold text-gray-500">Red</div>
+                <button
+                  class="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 transition-colors"
+                  onclick={async () => { await handleChangeRole('red', 'operative'); showProfileMenu = false; }}
+                >
+                  Operative {myPlayer?.team === 'red' && myPlayer?.role === 'operative' ? '✓' : ''}
+                </button>
+                <button
+                  class="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 transition-colors"
+                  onclick={async () => { await handleChangeRole('red', 'spymaster'); showProfileMenu = false; }}
+                >
+                  Spymaster {myPlayer?.team === 'red' && myPlayer?.role === 'spymaster' ? '✓' : ''}
+                </button>
+
+                <div class="px-3 pt-2 pb-1 text-[11px] font-semibold text-gray-500">Blue</div>
+                <button
+                  class="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 transition-colors"
+                  onclick={async () => { await handleChangeRole('blue', 'operative'); showProfileMenu = false; }}
+                >
+                  Operative {myPlayer?.team === 'blue' && myPlayer?.role === 'operative' ? '✓' : ''}
+                </button>
+                <button
+                  class="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 transition-colors"
+                  onclick={async () => { await handleChangeRole('blue', 'spymaster'); showProfileMenu = false; }}
+                >
+                  Spymaster {myPlayer?.team === 'blue' && myPlayer?.role === 'spymaster' ? '✓' : ''}
+                </button>
+              </div>
+            {/if}
           </div>
       </div>
   </header>
@@ -221,99 +436,18 @@
     </div>
   {/if}
 
-  {#if $room.status === 'waiting' || $game.status === 'lobby'}
-    <div class="p-8 text-center text-white overflow-auto flex-1 flex flex-col items-center">
-      <h1 class="text-4xl font-bold mb-2 drop-shadow-md">Room: {roomCode}</h1>
-      <p class="text-white/70 mb-8">Share this code with friends to join!</p>
-      
-      <div class="flex flex-wrap justify-center gap-8 mb-8 w-full max-w-4xl">
-        <!-- Red Team Lobby -->
-        <Card.Root class="w-[300px] bg-red-950/80 border-0 text-white overflow-hidden">
-          <Card.Header class="bg-red-800 py-3">
-             <Card.Title class="text-white text-center">Red Team</Card.Title>
-          </Card.Header>
-          <Card.Content class="p-4 space-y-3">
-             <button 
-               class="w-full bg-red-800/80 text-white hover:bg-red-700 px-4 py-2 rounded-md transition-colors font-medium disabled:opacity-50" 
-               onclick={() => handleJoinTeam('red')}
-               disabled={myPlayer?.team === 'red'}
-             >
-               {myPlayer?.team === 'red' && myPlayer?.role === 'operative' ? '✓ Operative' : 'Join as Operative'}
-             </button>
-             <button 
-               class="w-full bg-red-800/80 text-white hover:bg-red-700 px-4 py-2 rounded-md transition-colors font-medium disabled:opacity-50" 
-               onclick={() => handleBecomeSpymaster('red')}
-               disabled={myPlayer?.team === 'red' && myPlayer?.role === 'spymaster'}
-             >
-               {myPlayer?.team === 'red' && myPlayer?.role === 'spymaster' ? '✓ Spymaster' : 'Become Spymaster'}
-             </button>
-             <div class="mt-4 pt-4 border-t border-white/10">
-               <PlayerList players={redPlayers} currentPlayerId={$session.playerId || ''} />
-             </div>
-          </Card.Content>
-        </Card.Root>
-
-        <!-- Blue Team Lobby -->
-        <Card.Root class="w-[300px] bg-blue-950/80 border-0 text-white overflow-hidden">
-          <Card.Header class="bg-blue-800 py-3">
-             <Card.Title class="text-white text-center">Blue Team</Card.Title>
-          </Card.Header>
-          <Card.Content class="p-4 space-y-3">
-             <button 
-               class="w-full bg-blue-800/80 text-white hover:bg-blue-700 px-4 py-2 rounded-md transition-colors font-medium disabled:opacity-50" 
-               onclick={() => handleJoinTeam('blue')}
-               disabled={myPlayer?.team === 'blue'}
-             >
-               {myPlayer?.team === 'blue' && myPlayer?.role === 'operative' ? '✓ Operative' : 'Join as Operative'}
-             </button>
-             <button 
-               class="w-full bg-blue-800/80 text-white hover:bg-blue-700 px-4 py-2 rounded-md transition-colors font-medium disabled:opacity-50" 
-               onclick={() => handleBecomeSpymaster('blue')}
-               disabled={myPlayer?.team === 'blue' && myPlayer?.role === 'spymaster'}
-             >
-               {myPlayer?.team === 'blue' && myPlayer?.role === 'spymaster' ? '✓ Spymaster' : 'Become Spymaster'}
-             </button>
-             <div class="mt-4 pt-4 border-t border-white/10">
-               <PlayerList players={bluePlayers} currentPlayerId={$session.playerId || ''} />
-             </div>
-          </Card.Content>
-        </Card.Root>
-      </div>
-      
-      {#if isHost}
-        <button 
-          class="px-12 py-4 text-xl bg-green-600 hover:bg-green-700 text-white font-bold shadow-lg rounded-lg transform transition-transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed" 
-          onclick={handleStartGame}
-          disabled={isStarting || redPlayers.length < 2 || bluePlayers.length < 2}
-        >
-          {#if isStarting}
-            Starting...
-          {:else}
-            Start Game
-          {/if}
-        </button>
-        {#if redPlayers.length < 2 || bluePlayers.length < 2}
-          <p class="text-white/70 mt-2 text-sm">Need at least 2 players per team to start</p>
-        {/if}
-        {#if !redPlayers.some(p => p.role === 'spymaster') || !bluePlayers.some(p => p.role === 'spymaster')}
-          <p class="text-white/70 mt-1 text-sm">Each team needs a spymaster</p>
-        {/if}
-      {:else}
-        <p class="text-white/70">Waiting for host to start the game...</p>
-      {/if}
-    </div>
-  {:else}
+  <!-- Always show game board view -->
     <div class="flex-1 relative px-4 sm:px-8 py-2 flex flex-col min-h-0">
       
       <!-- Status Banner Overlay -->
-      <div class="flex justify-center items-center mb-2 relative min-h-[50px] gap-4 z-20">
+      <div class="flex flex-wrap justify-center items-center mb-2 relative min-h-[50px] gap-4 z-20">
           <StatusBanner 
             message={statusMessage} 
             type={$game.status === 'finished' ? ($game.winner === 'red' ? 'red' : 'blue') : ($game.currentTurn === 'red' ? 'red' : 'blue')}
           />
           {#if $canGuess && $game.guessesRemaining > 0}
              <button 
-                class="ml-4 font-bold shadow-md animate-pulse bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md" 
+                class="font-bold shadow-md text-white px-4 py-2 rounded-md transition-colors {myPlayer?.team === 'blue' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-red-600 hover:bg-red-700'}" 
                 onclick={handleEndTurn}
              >
                 End Turn
@@ -328,17 +462,27 @@
             team="red" 
             score={redScore} 
             players={redPlayers} 
-            isActive={$game.currentTurn === 'red'} 
+            isActive={$game.currentTurn === 'red'}
+            showJoinButtons={true}
+            currentPlayerTeam={myPlayer?.team || null}
+            currentPlayerRole={myPlayer?.role || null}
+            onjoinoperative={() => handleChangeRole('red', 'operative')}
+            onjoinspymaster={() => handleChangeRole('red', 'spymaster')}
           />
         </div>
 
         <!-- Center Column: Board -->
         <div class="h-full overflow-y-auto flex items-center justify-center p-2 relative">
-          <Board 
-            cards={$visibleCards} 
-            canInteract={$canGuess}
-            oncardclick={handleCardClick}
-          />
+          {#if $visibleCards.length > 0}
+            <Board 
+              cards={$visibleCards} 
+              canInteract={$canGuess}
+              markers={cardMarkers}
+              myTeam={myPlayer?.team || null}
+              oncardclick={handleCardClick}
+              oncardmark={handleCardMark}
+            />
+          {/if}
         </div>
 
         <!-- Right Column: Blue Team + Log -->
@@ -348,7 +492,12 @@
                 team="blue" 
                 score={blueScore} 
                 players={bluePlayers} 
-                isActive={$game.currentTurn === 'blue'} 
+                isActive={$game.currentTurn === 'blue'}
+                showJoinButtons={true}
+                currentPlayerTeam={myPlayer?.team || null}
+                currentPlayerRole={myPlayer?.role || null}
+                onjoinoperative={() => handleChangeRole('blue', 'operative')}
+                onjoinspymaster={() => handleChangeRole('blue', 'spymaster')}
               />
           </div>
           <div class="flex-1 min-h-0 w-full mb-2">
@@ -364,65 +513,39 @@
         <ClueInput onsubmit={handleClueSubmit} />
       </div>
     {/if}
-  {/if}
+
+    <!-- New Game Button at Bottom (Fixed Position) -->
+    {#if $game.status === 'finished' && isHost}
+      <div class="fixed bottom-4 left-1/2 -translate-x-1/2 z-30">
+        <button 
+          class="font-bold shadow-md bg-gray-600 hover:bg-gray-700 text-white px-6 py-2 rounded-md transition-colors disabled:opacity-50" 
+          onclick={handleResetGame}
+          disabled={isResetting}
+        >
+          {isResetting ? 'Resetting...' : '🔄 New Game'}
+        </button>
+      </div>
+    {/if}
+
+    <!-- Persistent Clue Display -->
+    {#if $game.clue}
+       <div class="fixed bottom-8 left-1/2 -translate-x-1/2 z-30 animate-in fade-in slide-in-from-bottom-4 pointer-events-none">
+          <div class="bg-white text-black px-8 py-3 rounded-lg shadow-2xl border border-gray-300 flex items-center gap-3">
+             <span class="text-3xl font-black tracking-wide uppercase">{$game.clue.word}</span>
+             <span class="text-2xl font-bold bg-gray-200 px-3 py-1 rounded-md">{$game.clue.count}</span>
+          </div>
+       </div>
+    {/if}
+
+    <!-- New Clue Popup -->
+    {#if showCluePopup && $game.clue}
+       <div class="fixed inset-0 z-50 flex items-center justify-center pointer-events-none" transition:scale={{ start: 0.9, duration: 300 }}>
+          <div class="bg-white text-black px-12 py-6 rounded-lg shadow-2xl border border-gray-300 flex items-center gap-4">
+             <span class="text-5xl font-black tracking-wide uppercase">{$game.clue.word}</span>
+             <span class="text-4xl font-bold bg-gray-200 px-4 py-2 rounded-md">{$game.clue.count}</span>
+          </div>
+       </div>
+    {/if}
 
   <NicknameDialog open={showNickname} onsubmit={handleNicknameSubmit} />
-  
-  <!-- Players Dialog -->
-  {#if showPlayers}
-    <div 
-      class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" 
-      role="button"
-      tabindex="0"
-      onclick={() => showPlayers = false}
-      onkeydown={(e) => e.key === 'Escape' && (showPlayers = false)}
-    >
-      <div 
-        class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" 
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="players-dialog-title"
-        tabindex="-1"
-        onclick={(e) => e.stopPropagation()}
-        onkeydown={(e) => e.stopPropagation()}
-      >
-        <div class="p-6">
-          <div class="flex justify-between items-center mb-4">
-            <h2 id="players-dialog-title" class="text-2xl font-bold text-gray-800">All Players ({$room.players.length})</h2>
-            <button 
-              class="text-gray-500 hover:text-gray-700 text-2xl leading-none"
-              onclick={() => showPlayers = false}
-            >
-              ×
-            </button>
-          </div>
-          
-          <div class="space-y-2 max-h-96 overflow-y-auto">
-            {#each $room.players as p (p.id)}
-              <div class="flex items-center justify-between p-3 rounded-lg bg-gray-50 border border-gray-200">
-                <div class="flex items-center gap-2">
-                  <span class="font-medium text-gray-800">{p.nickname}</span>
-                  {#if p.id === $room.hostId}
-                    <span class="text-xs px-2 py-0.5 rounded-full bg-yellow-100 text-yellow-700 font-medium">Host</span>
-                  {/if}
-                </div>
-                <div class="flex items-center gap-2">
-                  {#if p.team}
-                    <span class="text-xs px-2 py-1 rounded-full font-medium {p.team === 'red' ? 'bg-red-100 text-red-700' : 'bg-blue-100 text-blue-700'}">
-                      {p.team === 'red' ? 'Red' : 'Blue'}
-                    </span>
-                  {/if}
-                  {#if p.role === 'spymaster'}
-                    <span class="text-xs px-2 py-1 rounded-full bg-gray-200 text-gray-700 font-medium">
-                      🕵️
-                    </span>
-                  {/if}
-                </div>
-              </div>
-            {/each}
-          </div>
-        </div>
-      </div>
-    </div>
-  {/if}
 </div>

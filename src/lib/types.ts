@@ -22,6 +22,12 @@ export interface LogEntry {
   timestamp: number;
 }
 
+export interface CardMarker {
+  nickname: string;
+  team: 'red' | 'blue' | null;
+  playerId: string;
+}
+
 export interface GameState {
   status: 'lobby' | 'playing' | 'finished';
   cards: Card[];
@@ -32,6 +38,7 @@ export interface GameState {
   winner: 'red' | 'blue' | null;
   players: Player[];
   log: LogEntry[];
+  cardMarkers: Record<number, CardMarker[]>;
 }
 
 export interface RoomState {

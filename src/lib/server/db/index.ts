@@ -189,6 +189,7 @@ export async function setTeamAndRole(
 
 export interface RoomPlayerWithDetails extends RoomPlayer {
   nickname: string;
+  public_id: string;
 }
 
 export async function getRoomPlayers(roomId: string): Promise<RoomPlayerWithDetails[]> {
@@ -196,7 +197,7 @@ export async function getRoomPlayers(roomId: string): Promise<RoomPlayerWithDeta
     .from('room_players')
     .select(`
       *,
-      players (nickname)
+      players (nickname, public_id)
     `)
     .eq('room_id', roomId)
     .order('joined_at', { ascending: true });
@@ -205,7 +206,8 @@ export async function getRoomPlayers(roomId: string): Promise<RoomPlayerWithDeta
   
   return (data || []).map(rp => ({
     ...rp,
-    nickname: (rp.players as any)?.nickname || 'Unknown'
+    nickname: (rp.players as any)?.nickname || 'Unknown',
+    public_id: (rp.players as any)?.public_id || ''
   }));
 }
 
@@ -361,32 +363,72 @@ export async function revealCard(cardId: string, playerId: string): Promise<Card
 // ============================================
 
 export async function getRandomWords(count: number = 25): Promise<string[]> {
-  // Get total count of words
-  const { count: totalCount, error: countError } = await supabase
-    .from('word_bank')
-    .select('*', { count: 'exact', head: true });
-
-  if (countError) throw countError;
-
-  // Generate random offset
-  const maxOffset = Math.max(0, (totalCount || 0) - count);
-  const randomOffset = Math.floor(Math.random() * maxOffset);
-
-  // Fetch more words and shuffle to get truly random selection
+  // Get all words and randomly select
   const { data, error } = await supabase
     .from('word_bank')
-    .select('word')
-    .range(0, Math.min((totalCount || 0) - 1, 199)); // Get up to 200 words
+    .select('word');
+
+  if (error) throw error;
+  if (!data || data.length < count) {
+    throw new Error(`Not enough words in word bank. Need ${count}, have ${data?.length || 0}`);
+  }
+
+  // Shuffle and take first 'count' words
+  const shuffled = [...data].sort(() => Math.random() - 0.5);
+  return shuffled.slice(0, count).map(w => w.word);
+}
+
+// ============================================
+// Game Log Operations
+// ============================================
+
+export async function createGameLog(
+  gameId: string,
+  type: 'system' | 'clue' | 'guess' | 'turn',
+  message: string,
+  team?: 'red' | 'blue' | null
+): Promise<void> {
+  const { error } = await supabase
+    .from('game_logs')
+    .insert({
+      game_id: gameId,
+      type,
+      message,
+      team: team || null
+    });
+
+  if (error) throw error;
+}
+
+export async function getGameLogs(gameId: string): Promise<Array<{
+  type: 'system' | 'clue' | 'guess' | 'turn';
+  team?: 'red' | 'blue' | null;
+  message: string;
+  timestamp: number;
+}>> {
+  const { data, error } = await supabase
+    .from('game_logs')
+    .select('type, team, message, created_at')
+    .eq('game_id', gameId)
+    .order('created_at', { ascending: true });
 
   if (error) throw error;
 
-  // Shuffle and take required count
-  const words = (data || []).map(w => w.word);
-  for (let i = words.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [words[i], words[j]] = [words[j], words[i]];
-  }
-
-  return words.slice(0, count);
+  return (data || []).map(log => ({
+    type: log.type as 'system' | 'clue' | 'guess' | 'turn',
+    team: log.team as 'red' | 'blue' | null | undefined,
+    message: log.message,
+    timestamp: new Date(log.created_at).getTime()
+  }));
 }
+
+export async function deleteGameLogs(gameId: string): Promise<void> {
+  const { error } = await supabase
+    .from('game_logs')
+    .delete()
+    .eq('game_id', gameId);
+
+  if (error) throw error;
+}
+
 

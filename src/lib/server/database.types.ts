@@ -149,23 +149,29 @@ export interface Database {
           revealed_by?: string | null;
         };
       };
-      word_bank: {
+      game_logs: {
         Row: {
           id: string;
-          word: string;
-          category: string | null;
+          game_id: string;
+          type: 'system' | 'clue' | 'guess' | 'turn';
+          team: 'red' | 'blue' | null;
+          message: string;
           created_at: string;
         };
         Insert: {
           id?: string;
-          word: string;
-          category?: string | null;
+          game_id: string;
+          type: 'system' | 'clue' | 'guess' | 'turn';
+          team?: 'red' | 'blue' | null;
+          message: string;
           created_at?: string;
         };
         Update: {
           id?: string;
-          word?: string;
-          category?: string | null;
+          game_id?: string;
+          type?: 'system' | 'clue' | 'guess' | 'turn';
+          team?: 'red' | 'blue' | null;
+          message?: string;
           created_at?: string;
         };
       };
@@ -179,5 +185,5 @@ export type Room = Database['public']['Tables']['rooms']['Row'];
 export type RoomPlayer = Database['public']['Tables']['room_players']['Row'];
 export type Game = Database['public']['Tables']['games']['Row'];
 export type Card = Database['public']['Tables']['cards']['Row'];
-export type WordBankEntry = Database['public']['Tables']['word_bank']['Row'];
+export type GameLog = Database['public']['Tables']['game_logs']['Row'];
 

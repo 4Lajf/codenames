@@ -39,7 +39,8 @@ const io = new Server(httpServer, {
 // Dynamically import socket handlers (ESM)
 async function setupSocket() {
   try {
-    const { setupSocketHandlers } = await import('./src/lib/server/socket.js');
+    // Use .ts extension since we'll run with tsx or the files exist as .ts
+    const { setupSocketHandlers } = await import('./src/lib/server/socket.ts');
     setupSocketHandlers(io);
     console.log('[Server] Socket.IO handlers initialized');
   } catch (error) {

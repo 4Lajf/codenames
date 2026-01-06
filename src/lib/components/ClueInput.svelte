@@ -36,7 +36,6 @@
         placeholder="Clue" 
         {disabled}
         required
-        pattern="[A-Za-z]+"
         class="min-w-[150px] bg-white"
       />
   </div>

@@ -17,6 +17,14 @@ function createRoomStore() {
     const socket = getSocket();
     if (!socket) return;
 
+    // Remove any existing listeners before adding new ones to prevent duplicates
+    socket.off('room:playerJoined');
+    socket.off('room:playerLeft');
+    socket.off('room:updated');
+    socket.off('room:hostChanged');
+    socket.off('room:statusChanged');
+    socket.off('game:reset');
+
     socket.on('room:playerJoined', ({ player }: { player: Player }) => {
       update(s => ({
         ...s,
@@ -44,6 +52,21 @@ function createRoomStore() {
         hostId
       }));
     });
+
+    socket.on('room:statusChanged', ({ status }: { status: RoomState['status'] }) => {
+      update(s => ({
+        ...s,
+        status
+      }));
+    });
+
+    // Handle game reset - room goes back to waiting, players are reset
+    socket.on('game:reset', () => {
+      update(s => ({
+        ...s,
+        status: 'waiting'
+      }));
+    });
   }
 
   return {
@@ -61,11 +84,11 @@ function createRoomStore() {
     /**
      * Create a new room
      */
-    async create(code: string): Promise<{ success: boolean; error?: string }> {
+    async create(code: string, customWords?: string[]): Promise<{ success: boolean; error?: string }> {
       try {
         const response = await emitWithAck<{ success: boolean; room: RoomState; error?: string }>(
           'room:create', 
-          { code }
+          { code, customWords }
         );
         
         if (response.room) {
@@ -129,6 +152,30 @@ function createRoomStore() {
     async changeRole(role: 'spymaster' | 'operative'): Promise<{ success: boolean; error?: string }> {
       try {
         await emitWithAck('room:changeRole', { role });
+        return { success: true };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    /**
+     * Randomize teams
+     */
+    async randomizeTeams(): Promise<{ success: boolean; error?: string }> {
+      try {
+        await emitWithAck('room:randomizeTeams', {});
+        return { success: true };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    /**
+     * Transfer host to another player
+     */
+    async transferHost(playerId: string): Promise<{ success: boolean; error?: string }> {
+      try {
+        await emitWithAck('room:transferHost', { playerId });
         return { success: true };
       } catch (error: any) {
         return { success: false, error: error.message };

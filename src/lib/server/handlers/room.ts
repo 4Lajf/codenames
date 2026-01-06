@@ -1,13 +1,15 @@
 import type { Server, Socket } from 'socket.io';
 import * as db from '../db';
 import type { TokenPayload } from '../auth';
+import { broadcastGameState } from './broadcast';
+import { startGameLogic } from '../game/logic';
 
 // Room event handlers
 export function handleRoomEvents(io: Server, socket: Socket) {
   const player = socket.data.player as TokenPayload;
 
   // Create a new room
-  socket.on('room:create', async ({ code }: { code: string }, callback) => {
+  socket.on('room:create', async ({ code, customWords }: { code: string; customWords?: string[] }, callback) => {
     try {
       // Check if room code already exists
       const existingRoom = await db.getRoomByCode(code);
@@ -28,6 +30,9 @@ export function handleRoomEvents(io: Server, socket: Socket) {
       // Join socket to room channel
       socket.join(room.code);
 
+      // Automatically start game for new rooms
+      await startGameLogic(io, room.id, room.code, player.nickname, customWords);
+
       // Get room players
       const players = await db.getRoomPlayers(room.id);
 
@@ -35,7 +40,7 @@ export function handleRoomEvents(io: Server, socket: Socket) {
         success: true, 
         room: {
           code: room.code,
-          status: room.status,
+          status: 'playing', // Room status is now 'playing' immediately
           hostId: player.publicId,
           players: formatPlayersForClient(players, player.id)
         }
@@ -54,10 +59,7 @@ export function handleRoomEvents(io: Server, socket: Socket) {
       if (!room) {
         return callback({ error: 'Room not found' });
       }
-
-      if (room.status !== 'waiting') {
-        return callback({ error: 'Game already in progress' });
-      }
+      // Allow joining rooms in any status (waiting / playing / finished)
 
       // Add player to room
       await db.joinRoom(room.id, player.id);
@@ -88,7 +90,7 @@ export function handleRoomEvents(io: Server, socket: Socket) {
         room: {
           code: room.code,
           status: room.status,
-          hostId: host?.player_id === player.id ? player.publicId : (host?.player_id || ''),
+          hostId: host?.public_id || '',
           players: formatPlayersForClient(players, player.id)
         }
       });
@@ -138,6 +140,16 @@ export function handleRoomEvents(io: Server, socket: Socket) {
         players: formatPlayersForClient(players, player.id)
       });
 
+      // If a game is in progress, rebroadcast game state so spectators/spymasters get correct visibility
+      const room = await db.getRoomById(roomId);
+      if (room && room.status !== 'waiting') {
+        const game = await db.getGameByRoomId(roomId);
+        if (game) {
+          const cards = await db.getGameCards(game.id);
+          await broadcastGameState(io, roomCode, game, cards, players);
+        }
+      }
+
       callback({ success: true });
     } catch (error: any) {
       console.error('room:changeTeam error:', error);
@@ -165,13 +177,7 @@ export function handleRoomEvents(io: Server, socket: Socket) {
         return callback({ error: 'Must join a team first' });
       }
 
-      // Check if spymaster role is available
-      if (role === 'spymaster') {
-        const spymasterTaken = await db.isSpymasterTaken(roomId, roomPlayer.team);
-        if (spymasterTaken) {
-          return callback({ error: 'Spymaster role is already taken' });
-        }
-      }
+      // Multiple spymasters are now allowed
 
       await db.setTeamAndRole(roomId, player.id, roomPlayer.team, role);
 
@@ -181,10 +187,130 @@ export function handleRoomEvents(io: Server, socket: Socket) {
         players: formatPlayersForClient(players, player.id)
       });
 
+      // If a game is in progress, rebroadcast game state so role visibility updates immediately
+      const room = await db.getRoomById(roomId);
+      if (room && room.status !== 'waiting') {
+        const game = await db.getGameByRoomId(roomId);
+        if (game) {
+          const cards = await db.getGameCards(game.id);
+          await broadcastGameState(io, roomCode, game, cards, players);
+        }
+      }
+
       callback({ success: true });
     } catch (error: any) {
       console.error('room:changeRole error:', error);
       callback({ error: error.message || 'Failed to change role' });
+    }
+  });
+
+  // Randomize teams
+  socket.on('room:randomizeTeams', async (data, callback) => {
+    try {
+      const roomId = socket.data.roomId;
+      const roomCode = socket.data.roomCode;
+      
+      if (!roomId) {
+        return callback({ error: 'Not in a room' });
+      }
+
+      // Check if player is host
+      const room = await db.getRoomById(roomId);
+      if (!room || room.host_player_id !== player.id) {
+        return callback({ error: 'Only host can randomize teams' });
+      }
+
+      // Get all players
+      const players = await db.getRoomPlayers(roomId);
+      
+      if (players.length < 4) {
+        return callback({ error: 'Need at least 4 players to randomize teams' });
+      }
+
+      // Shuffle players
+      const shuffled = [...players].sort(() => Math.random() - 0.5);
+      
+      // Split into two teams
+      const midpoint = Math.ceil(shuffled.length / 2);
+      const redTeam = shuffled.slice(0, midpoint);
+      const blueTeam = shuffled.slice(midpoint);
+
+      // Assign teams and roles - everyone becomes an operative
+      for (let i = 0; i < redTeam.length; i++) {
+        await db.setTeamAndRole(
+          roomId, 
+          redTeam[i].player_id, 
+          'red', 
+          'operative'
+        );
+      }
+
+      for (let i = 0; i < blueTeam.length; i++) {
+        await db.setTeamAndRole(
+          roomId, 
+          blueTeam[i].player_id, 
+          'blue', 
+          'operative'
+        );
+      }
+
+      // Broadcast updated room state
+      const updatedPlayers = await db.getRoomPlayers(roomId);
+      io.to(roomCode).emit('room:updated', {
+        players: formatPlayersForClient(updatedPlayers, player.id)
+      });
+
+      // If a game is in progress, rebroadcast game state to reflect new teams/roles
+      if (room.status !== 'waiting') {
+        const game = await db.getGameByRoomId(roomId);
+        if (game) {
+          const cards = await db.getGameCards(game.id);
+          await broadcastGameState(io, roomCode, game, cards, updatedPlayers);
+        }
+      }
+
+      callback({ success: true });
+    } catch (error: any) {
+      console.error('room:randomizeTeams error:', error);
+      callback({ error: error.message || 'Failed to randomize teams' });
+    }
+  });
+
+  // Transfer host
+  socket.on('room:transferHost', async ({ playerId }: { playerId: string }, callback) => {
+    try {
+      const roomId = socket.data.roomId;
+      const roomCode = socket.data.roomCode;
+      
+      if (!roomId) {
+        return callback({ error: 'Not in a room' });
+      }
+
+      // Check if player is host
+      const room = await db.getRoomById(roomId);
+      if (!room || room.host_player_id !== player.id) {
+        return callback({ error: 'Only host can transfer host role' });
+      }
+
+      // Get all players and find target by public_id
+      const players = await db.getRoomPlayers(roomId);
+      const targetPlayer = players.find(p => p.public_id === playerId);
+      if (!targetPlayer) {
+        return callback({ error: 'Target player not in room' });
+      }
+
+      // Transfer host using internal player_id
+      await db.updateRoomHost(roomId, targetPlayer.player_id);
+
+      // Broadcast host change using public_id
+      io.to(roomCode).emit('room:hostChanged', {
+        hostId: targetPlayer.public_id
+      });
+
+      callback({ success: true });
+    } catch (error: any) {
+      console.error('room:transferHost error:', error);
+      callback({ error: error.message || 'Failed to transfer host' });
     }
   });
 }
@@ -226,7 +352,7 @@ export async function handlePlayerLeaveRoom(
     await db.updateRoomHost(roomId, newHost.player_id);
     
     io.to(roomCode).emit('room:hostChanged', {
-      hostId: newHost.player_id
+      hostId: newHost.public_id
     });
   }
 
@@ -240,7 +366,7 @@ export async function handlePlayerLeaveRoom(
 // Helper to format player data for client
 function formatPlayerForClient(rp: db.RoomPlayerWithDetails, currentPlayerId: string) {
   return {
-    id: rp.player_id === currentPlayerId ? rp.player_id : rp.player_id,
+    id: rp.public_id,
     nickname: rp.nickname,
     team: rp.team,
     role: rp.role

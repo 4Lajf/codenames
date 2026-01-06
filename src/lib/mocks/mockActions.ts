@@ -45,11 +45,11 @@ export function mockRevealCard(cardIndex: number, gameState: GameState): GameSta
       newState.guessesRemaining--;
     }
     
-    // Check win condition
+    // Check win condition + remaining cards (counts down)
     const redLeft = newState.cards.filter((c: Card) => c.type === 'red' && !c.revealed).length;
     const blueLeft = newState.cards.filter((c: Card) => c.type === 'blue' && !c.revealed).length;
     
-    newState.scores = { red: 9 - redLeft, blue: 8 - blueLeft }; // Assuming 9/8 start
+    newState.scores = { red: redLeft, blue: blueLeft }; // Remaining to win
 
     if (redLeft === 0) {
       newState.status = 'finished';
@@ -100,12 +100,7 @@ export function mockJoinTeam(playerId: string, team: 'red' | 'blue', role: 'oper
   const playerIndex = newPlayers.findIndex((p: Player) => p.id === playerId);
   
   if (playerIndex !== -1) {
-    // Check if role is taken (spymaster limit 1)
-    if (role === 'spymaster') {
-      const existingSpymaster = newPlayers.find((p: Player) => p.team === team && p.role === 'spymaster');
-      if (existingSpymaster) return players; // Role taken
-    }
-    
+    // Multiple spymasters are now allowed
     newPlayers[playerIndex].team = team;
     newPlayers[playerIndex].role = role;
   }

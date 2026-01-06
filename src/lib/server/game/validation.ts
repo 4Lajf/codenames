@@ -9,17 +9,12 @@ export function validateClueWord(word: string, boardWords: string[]): { valid: b
   const normalizedClue = word.toLowerCase().trim();
   const normalizedBoard = boardWords.map(w => w.toLowerCase());
   
-  // Clue must be a single word
-  if (normalizedClue.includes(' ')) {
-    return { valid: false, error: 'Clue must be a single word' };
-  }
-
   // Clue cannot be empty
   if (normalizedClue.length === 0) {
     return { valid: false, error: 'Clue cannot be empty' };
   }
 
-  // Clue cannot match any board word
+  // Clue cannot match any board word exactly
   if (normalizedBoard.includes(normalizedClue)) {
     return { valid: false, error: 'Clue cannot be a word on the board' };
   }
@@ -51,27 +46,9 @@ export function validateClueCount(count: number): { valid: boolean; error?: stri
 
 /**
  * Check if game can start with current team composition
+ * (Validation removed to allow auto-starting with no players)
  */
 export function canStartGame(players: RoomPlayerWithDetails[]): { valid: boolean; error?: string } {
-  const redTeam = players.filter(p => p.team === 'red');
-  const blueTeam = players.filter(p => p.team === 'blue');
-  
-  // Need at least 2 players per team
-  if (redTeam.length < 2) {
-    return { valid: false, error: 'Red team needs at least 2 players' };
-  }
-  if (blueTeam.length < 2) {
-    return { valid: false, error: 'Blue team needs at least 2 players' };
-  }
-  
-  // Each team needs a spymaster
-  if (!redTeam.some(p => p.role === 'spymaster')) {
-    return { valid: false, error: 'Red team needs a spymaster' };
-  }
-  if (!blueTeam.some(p => p.role === 'spymaster')) {
-    return { valid: false, error: 'Blue team needs a spymaster' };
-  }
-  
   return { valid: true };
 }
 

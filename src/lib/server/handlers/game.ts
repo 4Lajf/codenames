@@ -11,13 +11,18 @@ import {
   isCurrentOperative,
   isOnCurrentTeam
 } from '../game/validation';
+import { broadcastGameState } from './broadcast';
+import { startGameLogic } from '../game/logic';
+
+// In-memory cache for card markers (in production, store in database)
+const cardMarkersCache: Record<string, Record<number, Array<{ playerId: string; nickname: string; team: 'red' | 'blue' | null }>>> = {};
 
 // Game event handlers
 export function handleGameEvents(io: Server, socket: Socket) {
   const player = socket.data.player as TokenPayload;
 
   // Start the game (host only)
-  socket.on('game:start', async (data, callback) => {
+  socket.on('game:start', async (data: { customWords?: string[]; autoStart?: boolean }, callback) => {
     try {
       const roomId = socket.data.roomId;
       const roomCode = socket.data.roomCode;
@@ -40,34 +45,18 @@ export function handleGameEvents(io: Server, socket: Socket) {
         return callback({ error: 'Game already started' });
       }
 
-      // Get players and validate team composition
+      // Get players
       const players = await db.getRoomPlayers(roomId);
-      const validation = canStartGame(players);
-      if (!validation.valid) {
-        return callback({ error: validation.error });
+      
+      // Only validate team composition if not auto-starting
+      if (!data?.autoStart) {
+        const validation = canStartGame(players);
+        if (!validation.valid) {
+          return callback({ error: validation.error });
+        }
       }
 
-      // Randomly determine first team (red goes first by default with 9 cards)
-      const firstTeam: 'red' | 'blue' = Math.random() < 0.5 ? 'red' : 'blue';
-
-      // Get random words from word bank
-      const words = await db.getRandomWords(25);
-      if (words.length < 25) {
-        return callback({ error: 'Not enough words in word bank' });
-      }
-
-      // Create game
-      const game = await db.createGame(roomId, firstTeam);
-
-      // Prepare and create cards
-      const cardData = prepareGameCards(words, firstTeam);
-      const cards = await db.createGameCards(game.id, cardData);
-
-      // Update room status
-      await db.updateRoomStatus(roomId, 'playing');
-
-      // Broadcast game started to all players
-      broadcastGameState(io, roomCode, game, cards, players);
+      await startGameLogic(io, roomId, roomCode, player.nickname, data?.customWords);
 
       callback({ success: true });
     } catch (error: any) {
@@ -130,15 +119,24 @@ export function handleGameEvents(io: Server, socket: Socket) {
         guesses_remaining: count + 1 // +1 bonus guess
       });
 
+      // Save log entry
+      await db.createGameLog(
+        game.id,
+        'clue',
+        `${player.nickname} gives clue: ${word.toUpperCase()} ${count}`,
+        game.current_turn
+      );
+
       // Broadcast clue to all players
       io.to(roomCode).emit('game:clueGiven', {
         word: word.toUpperCase(),
         count,
-        team: game.current_turn
+        team: game.current_turn,
+        spymasterName: player.nickname
       });
 
       // Broadcast updated game state
-      broadcastGameState(io, roomCode, updatedGame, cards, players);
+      await broadcastGameState(io, roomCode, updatedGame, cards, players);
 
       callback({ success: true });
     } catch (error: any) {
@@ -204,6 +202,14 @@ export function handleGameEvents(io: Server, socket: Socket) {
       // Update game state
       const updatedGame = await db.updateGameState(game.id, result.gameUpdates);
 
+      // Save log entry
+      await db.createGameLog(
+        game.id,
+        'guess',
+        `${player.nickname} revealed ${revealedCard.word} (${revealedCard.type})`,
+        game.current_turn
+      );
+
       // Broadcast card revealed
       io.to(roomCode).emit('game:cardRevealed', {
         position: cardPosition,
@@ -212,27 +218,47 @@ export function handleGameEvents(io: Server, socket: Socket) {
         revealedBy: player.nickname
       });
 
-      // If turn changed, broadcast
-      if (result.turnEnded) {
-        io.to(roomCode).emit('game:turnChanged', {
-          newTurn: result.gameUpdates.current_turn
-        });
-      }
-
-      // If game ended, broadcast winner
+      // If game ended, broadcast winner and save log
       if (result.gameUpdates.winner) {
+        const winner = result.gameUpdates.winner;
+        const reason = result.endReason === 'assassin' 
+          ? `Assassin hit! ${winner} team wins!` 
+          : `${winner} team found all their agents!`;
+        
+        await db.createGameLog(
+          game.id,
+          'system',
+          reason,
+          null
+        );
+
         io.to(roomCode).emit('game:ended', {
-          winner: result.gameUpdates.winner,
+          winner,
           reason: result.endReason
         });
 
         // Update room status
         await db.updateRoomStatus(roomId, 'finished');
+        io.to(roomCode).emit('room:statusChanged', { status: 'finished' });
+      } else if (result.turnEnded) {
+        // Only emit turn changed if game didn't end
+        const newTurn = result.gameUpdates.current_turn;
+        if (newTurn) {
+          await db.createGameLog(
+            game.id,
+            'turn',
+            `${newTurn} team's turn`,
+            null
+          );
+          io.to(roomCode).emit('game:turnChanged', {
+            newTurn
+          });
+        }
       }
 
       // Get all cards and broadcast full state
       const allCards = await db.getGameCards(game.id);
-      broadcastGameState(io, roomCode, updatedGame, allCards, players);
+      await broadcastGameState(io, roomCode, updatedGame, allCards, players);
 
       callback({ 
         success: true, 
@@ -284,19 +310,173 @@ export function handleGameEvents(io: Server, socket: Socket) {
         guesses_remaining: null
       });
 
+      // Save log entry
+      await db.createGameLog(
+        game.id,
+        'turn',
+        `${player.nickname} ended the turn. ${newTurn} team's turn`,
+        null
+      );
+
       // Broadcast turn change
       io.to(roomCode).emit('game:turnChanged', {
-        newTurn
+        newTurn,
+        endedBy: player.nickname
       });
 
       // Get cards and broadcast updated state
       const cards = await db.getGameCards(game.id);
-      broadcastGameState(io, roomCode, updatedGame, cards, players);
+      await broadcastGameState(io, roomCode, updatedGame, cards, players);
 
       callback({ success: true });
     } catch (error: any) {
       console.error('game:endTurn error:', error);
       callback({ error: error.message || 'Failed to end turn' });
+    }
+  });
+
+  // Mark a card (place nickname on it)
+  socket.on('game:markCard', async ({ position }: { position: number }, callback) => {
+    try {
+      const roomId = socket.data.roomId;
+      const roomCode = socket.data.roomCode;
+      
+      if (!roomId) {
+        return callback({ error: 'Not in a room' });
+      }
+
+      // Get game
+      const game = await db.getGameByRoomId(roomId);
+      if (!game) {
+        return callback({ error: 'Game not found' });
+      }
+
+      // Get card at position
+      const card = await db.getCardByPosition(game.id, position);
+      if (!card) {
+        return callback({ error: 'Card not found' });
+      }
+
+      if (card.revealed) {
+        return callback({ error: 'Card already revealed' });
+      }
+
+      // Get player info
+      const players = await db.getRoomPlayers(roomId);
+      const roomPlayer = players.find(p => p.player_id === player.id);
+      
+      if (!roomPlayer) {
+        return callback({ error: 'Player not in room' });
+      }
+
+      // Get or create markers for this card (stored in-memory for now)
+      // In a real app, you'd store this in the database
+      if (!cardMarkersCache[game.id]) {
+        cardMarkersCache[game.id] = {};
+      }
+      if (!cardMarkersCache[game.id][position]) {
+        cardMarkersCache[game.id][position] = [];
+      }
+
+      const markers = cardMarkersCache[game.id][position];
+      const existingIndex = markers.findIndex(m => m.playerId === player.publicId);
+
+      if (existingIndex >= 0) {
+        // Remove existing marker (toggle off)
+        markers.splice(existingIndex, 1);
+      } else {
+        // Add new marker
+        markers.push({
+          playerId: player.publicId,
+          nickname: roomPlayer.nickname,
+          team: roomPlayer.team
+        });
+      }
+
+      // Broadcast marker update to all players
+      io.to(roomCode).emit('game:markerUpdated', {
+        position,
+        markers: markers.map(m => ({
+          playerId: m.playerId,
+          nickname: m.nickname,
+          team: m.team
+        }))
+      });
+
+      callback({ success: true });
+    } catch (error: any) {
+      console.error('game:markCard error:', error);
+      callback({ error: error.message || 'Failed to mark card' });
+    }
+  });
+
+  // Reset game (host only)
+  socket.on('game:reset', async (data, callback) => {
+    try {
+      const roomId = socket.data.roomId;
+      const roomCode = socket.data.roomCode;
+      
+      if (!roomId) {
+        return callback({ error: 'Not in a room' });
+      }
+
+      // Get room and verify host
+      const room = await db.getRoomById(roomId);
+      if (!room) {
+        return callback({ error: 'Room not found' });
+      }
+
+      if (room.host_player_id !== player.id) {
+        return callback({ error: 'Only the host can reset the game' });
+      }
+
+      // Get game before deleting to clean up logs and extract words
+      const game = await db.getGameByRoomId(roomId);
+      let previousWords: string[] | undefined;
+      
+      if (game) {
+        // Get words from previous game's cards
+        const previousCards = await db.getGameCards(game.id);
+        previousWords = previousCards.map(card => card.word);
+        
+        // Delete game logs
+        await db.deleteGameLogs(game.id);
+        // Clear card markers cache
+        if (cardMarkersCache[game.id]) {
+          delete cardMarkersCache[game.id];
+        }
+      }
+
+      // Delete existing game
+      await db.deleteGameByRoomId(roomId);
+
+      // Reset all players to unassigned
+      const players = await db.getRoomPlayers(roomId);
+      for (const p of players) {
+        await db.setTeamAndRole(roomId, p.player_id, null, null);
+      }
+
+      // Update room status to waiting
+      await db.updateRoomStatus(roomId, 'waiting');
+
+      // Get updated players
+      const updatedPlayers = await db.getRoomPlayers(roomId);
+
+      // Broadcast reset event
+      io.to(roomCode).emit('game:reset', {});
+      io.to(roomCode).emit('room:statusChanged', { status: 'waiting' });
+      io.to(roomCode).emit('room:updated', {
+        players: formatPlayersForClient(updatedPlayers)
+      });
+
+      // Automatically start a new game (like when creating a room)
+      // Use words from previous game if available
+      await startGameLogic(io, roomId, roomCode, player.nickname, previousWords);
+
+      callback({ success: true });
+    } catch (error: any) {
+      console.error('game:reset error:', error);
+      callback({ error: error.message || 'Failed to reset game' });
     }
   });
 
@@ -316,7 +496,12 @@ export function handleGameEvents(io: Server, socket: Socket) {
 
       const players = await db.getRoomPlayers(roomId);
       const roomPlayer = players.find(p => p.player_id === player.id);
-      const isSpymaster = roomPlayer?.role === 'spymaster';
+      // Only spymasters can see all cards
+      const canSeeAll = roomPlayer?.role === 'spymaster';
+
+      // Find the host's public_id
+      const host = players.find(p => p.player_id === room.host_player_id);
+      const hostPublicId = host?.public_id || '';
 
       if (room.status === 'waiting') {
         return callback({
@@ -325,7 +510,7 @@ export function handleGameEvents(io: Server, socket: Socket) {
           room: {
             code: room.code,
             status: room.status,
-            hostId: room.host_player_id,
+            hostId: hostPublicId,
             players: formatPlayersForClient(players)
           }
         });
@@ -337,15 +522,19 @@ export function handleGameEvents(io: Server, socket: Socket) {
       }
 
       const cards = await db.getGameCards(game.id);
+      const logs = await db.getGameLogs(game.id);
 
       callback({
         success: true,
         status: 'playing',
-        game: formatGameState(game, cards, players, isSpymaster),
+        game: {
+          ...formatGameState(game, cards, players, canSeeAll),
+          log: logs
+        },
         room: {
           code: room.code,
           status: room.status,
-          hostId: room.host_player_id,
+          hostId: hostPublicId,
           players: formatPlayersForClient(players)
         }
       });
@@ -461,35 +650,12 @@ function processGuessResult(game: Game, card: Card): {
   };
 }
 
-// Broadcast game state to all players (with role-based masking)
-function broadcastGameState(
-  io: Server, 
-  roomCode: string, 
-  game: Game, 
-  cards: Card[], 
-  players: db.RoomPlayerWithDetails[]
-) {
-  const room = io.sockets.adapter.rooms.get(roomCode);
-  if (!room) return;
-
-  for (const socketId of room) {
-    const socket = io.sockets.sockets.get(socketId);
-    if (!socket) continue;
-
-    const socketPlayer = socket.data.player as TokenPayload;
-    const roomPlayer = players.find(p => p.player_id === socketPlayer.id);
-    const isSpymaster = roomPlayer?.role === 'spymaster';
-
-    socket.emit('game:state', formatGameState(game, cards, players, isSpymaster));
-  }
-}
-
 // Format game state for client
 function formatGameState(
   game: Game, 
   cards: Card[], 
   players: db.RoomPlayerWithDetails[],
-  isSpymaster: boolean
+  canSeeAll: boolean
 ) {
   return {
     status: game.winner ? 'finished' : 'playing',
@@ -497,13 +663,14 @@ function formatGameState(
     clue: game.clue_word ? { word: game.clue_word, count: game.clue_count } : null,
     guessesRemaining: game.guesses_remaining || 0,
     scores: {
-      red: (game.red_cards_remaining <= 9 ? 9 : 8) - game.red_cards_remaining,
-      blue: (game.blue_cards_remaining <= 8 ? 8 : 9) - game.blue_cards_remaining
+      // Remaining cards needed to win (counts down)
+      red: game.red_cards_remaining,
+      blue: game.blue_cards_remaining
     },
     winner: game.winner,
     cards: cards.map(card => ({
       word: card.word,
-      type: (isSpymaster || card.revealed || game.winner) ? card.type : 'hidden',
+      type: (canSeeAll || card.revealed || game.winner) ? card.type : 'hidden',
       revealed: card.revealed,
       position: card.position
     })),
@@ -514,7 +681,7 @@ function formatGameState(
 // Format players for client
 function formatPlayersForClient(players: db.RoomPlayerWithDetails[]) {
   return players.map(p => ({
-    id: p.player_id,
+    id: p.public_id,
     nickname: p.nickname,
     team: p.team,
     role: p.role

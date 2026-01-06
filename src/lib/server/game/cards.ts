@@ -44,11 +44,28 @@ export function prepareGameCards(
   const shuffledWords = shuffle(words).slice(0, 25);
   const cardTypes = generateCardTypes(firstTeam);
 
-  return shuffledWords.map((word, index) => ({
+  const cards = shuffledWords.map((word, index) => ({
     word: word.toUpperCase(),
     position: index,
     type: cardTypes[index]
   }));
+
+  // Override: "SHIGATSU WA KIMI NO USO" is always assassin
+  const specialCard = cards.find(c => c.word === 'SHIGATSU WA KIMI NO USO');
+  if (specialCard) {
+    // Find the current assassin card and swap its type with the special card
+    const assassinCard = cards.find(c => c.type === 'assassin' && c.word !== 'SHIGATSU WA KIMI NO USO');
+    if (assassinCard) {
+      const originalType = specialCard.type;
+      specialCard.type = 'assassin';
+      assassinCard.type = originalType;
+    } else {
+      // If no other assassin found (shouldn't happen), just set it to assassin
+      specialCard.type = 'assassin';
+    }
+  }
+
+  return cards;
 }
 
 /**

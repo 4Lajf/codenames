@@ -4,7 +4,7 @@
   let { players = [], currentPlayerId }: { players: Player[], currentPlayerId: string } = $props();
 
   function getRoleIcon(player: Player) {
-    if (player.role === 'spymaster') return '👑';
+    if (player.role === 'spymaster') return '🕵️';
     return '';
   }
 </script>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { goto } from '$app/navigation';
+  import { browser } from '$app/environment';
   import { onMount } from 'svelte';
   import { session } from '$lib/stores/session';
   import { room } from '$lib/stores/room';
@@ -25,12 +26,34 @@
       nickname = savedNickname;
     }
 
-    try {
-      const response = await fetch('/words.txt');
-      const text = await response.text();
-      wordList = text.split('\n').map(w => w.trim()).filter(w => w.length === 6);
-    } catch (e) {
-      console.error('Failed to load words.txt', e);
+    // Load recently used custom words
+    const savedCustomWords = localStorage.getItem('codenames_custom_words');
+    if (savedCustomWords) {
+      customWords = savedCustomWords;
+    }
+
+    // Check if word list is already in localStorage
+    const savedWordList = localStorage.getItem('codenames_word_list');
+    if (savedWordList) {
+      try {
+        wordList = JSON.parse(savedWordList);
+      } catch (e) {
+        console.error('Failed to parse saved word list', e);
+      }
+    }
+
+    // If no saved word list, fetch from server
+    if (wordList.length === 0 && browser) {
+      try {
+        const response = await fetch('/words.txt');
+        const text = await response.text();
+        wordList = text.split('\n').map(w => w.trim()).filter(w => w.length === 6);
+        
+        // Save to localStorage for next time
+        localStorage.setItem('codenames_word_list', JSON.stringify(wordList));
+      } catch (e) {
+        console.error('Failed to load words.txt', e);
+      }
     }
   });
 
@@ -67,6 +90,8 @@
   }
 
   async function handleCreateRoom() {
+    if (!browser) return;
+    
     const sessionOk = await initSession();
     if (!sessionOk) return;
 
@@ -86,8 +111,11 @@
       newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     }
     
+    // Parse custom words into array
+    const parsedCustomWords = customWords.trim().split('\n').map(w => w.trim()).filter(w => w.length > 0);
+    
     // Create room via socket
-    const result = await room.create(newCode);
+    const result = await room.create(newCode, parsedCustomWords.length >= 25 ? parsedCustomWords : undefined);
     
     if (!result.success) {
       error = result.error || 'Failed to create room';
@@ -100,6 +128,8 @@
   }
 
   async function handleJoinRoom() {
+    if (!browser) return;
+    
     if (!roomCode.trim()) {
       error = 'Please enter a room code';
       return;
@@ -113,7 +143,7 @@
 
     const code = roomCode.toUpperCase().trim();
 
-    // First check if room exists
+    // First check if room exists (only in browser)
     try {
       const response = await fetch(`/api/room/${code}`);
       if (!response.ok) {
@@ -142,7 +172,7 @@
   }
 </script>
 
-<div class="min-h-screen flex items-center justify-center p-4 bg-codenames-orange font-sans">
+<div class="min-h-screen flex items-center justify-center p-4 bg-[#5a1a1a] font-sans">
   <div class="w-full max-w-md space-y-8">
     
     <!-- Main Welcome Card -->
@@ -228,11 +258,11 @@
             <Textarea 
               bind:value={customWords}
               placeholder="Enter custom words here..."
-              rows={4}
+              rows={10}
               disabled={isLoading}
-              class="text-sm border-gray-200 resize-none"
+              class="text-sm border-gray-200 resize-none h-[240px] overflow-y-auto"
             />
-            <p class="text-xs text-gray-400">Minimum 25 words required for a game. Leave empty to use default words.</p>
+            <p class="text-xs text-gray-400">Minimum 25 words required for a game.</p>
         </div>
 
       </Card.Content>
@@ -244,14 +274,6 @@
         Connection error: {$socketError}
       </div>
     {/if}
-
-    <!-- Footer -->
-    <div class="text-center text-white/80 text-sm">
-        <p>Looking for a public game?</p>
-        <button class="text-white underline hover:text-yellow-200">
-            Open Room Explorer
-        </button>
-    </div>
 
   </div>
 </div>

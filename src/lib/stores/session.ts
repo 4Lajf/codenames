@@ -1,4 +1,5 @@
 import { writable, get } from 'svelte/store';
+import { browser } from '$app/environment';
 import { initSocket, disconnectSocket } from './socket';
 
 interface SessionData {
@@ -25,6 +26,8 @@ function createSessionStore() {
      * Initialize session from localStorage or create new
      */
     async init(nickname?: string): Promise<boolean> {
+      if (!browser) return false;
+      
       // Check for existing session
       const savedToken = localStorage.getItem('codenames_token');
       const savedPlayerId = localStorage.getItem('codenames_player_id');
@@ -74,6 +77,8 @@ function createSessionStore() {
      * Update nickname
      */
     async updateNickname(nickname: string): Promise<boolean> {
+      if (!browser) return false;
+      
       const current = get({ subscribe });
       
       try {
