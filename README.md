@@ -37,8 +37,7 @@ npm install
 1. Create a new Supabase project at [supabase.com](https://supabase.com)
 2. Go to your project's SQL Editor
 3. Run the schema file: `src/lib/server/schema.sql`
-4. Run the seed file: `src/lib/server/seed-words.sql`
-5. Get your project credentials from Settings > API
+4. Get your project credentials from Settings > API
 
 ### 3. Configure Environment
 
