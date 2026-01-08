@@ -59,54 +59,15 @@ JWT_SECRET=your_secure_random_string
 
 ### 4. Development
 
-For frontend-only development (hot reload):
-```sh
-npm run dev
-```
-
-For full-stack development with Socket.IO:
-```sh
-npm run build
-npm run start
-```
-
-Or in one command:
-```sh
-npm run dev:server
-```
-
 ## Scripts
 
 | Command | Description |
 |---------|-------------|
 | `npm run dev` | Start Vite dev server (frontend only) |
-| `npm run dev:server` | Build and start full server |
+| `npm run dev:fullr` | start backend and frontend server |
 | `npm run build` | Build for production |
 | `npm run start` | Start production server |
 | `npm run preview` | Preview production build |
-
-## Architecture
-
-### Backend Structure
-
-```
-src/lib/server/
-├── auth.ts              # JWT token generation/verification
-├── database.types.ts    # TypeScript types for DB tables
-├── supabaseAdmin.ts     # Supabase client initialization
-├── socket.ts            # Socket.IO server setup
-├── schema.sql           # Database schema
-├── seed-words.sql       # Word bank seed data
-├── db/
-│   └── index.ts         # Database operations
-├── handlers/
-│   ├── room.ts          # Room socket event handlers
-│   ├── game.ts          # Game socket event handlers
-│   └── broadcast.ts     # State broadcasting utilities
-└── game/
-    ├── cards.ts         # Card generation logic
-    └── validation.ts    # Game rule validation
-```
 
 ### Socket Events
 
@@ -124,18 +85,6 @@ src/lib/server/
 - `game:endTurn` - End turn early
 - `game:getState` - Refresh game state
 
-## Game Rules
-
-1. **Setup**: 25 word cards in a 5x5 grid. First team has 9 agents, second has 8.
-2. **Teams**: Red and Blue. Each needs a Spymaster and Operative(s).
-3. **Gameplay**:
-   - Spymaster gives one-word clue + number
-   - Operatives guess cards (number + 1 bonus guess)
-   - Correct: continue guessing
-   - Wrong team/neutral: turn ends
-   - Assassin: instant loss
-4. **Win**: First team to find all agents, or opponent hits assassin
-
 ## Deployment
 
 The app uses `@sveltejs/adapter-node` and can be deployed to:
@@ -143,11 +92,6 @@ The app uses `@sveltejs/adapter-node` and can be deployed to:
 - Fly.io
 - DigitalOcean App Platform
 - Any Node.js hosting with WebSocket support
-
-Remember to:
-1. Set all environment variables
-2. Run database migrations on Supabase
-3. Ensure WebSocket connections are supported
 
 ## License
 
