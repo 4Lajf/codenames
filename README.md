@@ -4,7 +4,7 @@ A real-time multiplayer implementation of the classic board game Codenames, buil
 
 ## Tech Stack
 
-- **Frontend**: SvelteKit 5 with Svelte 5 runes
+- **Frontend**: SvelteKit 2 with Svelte 5 runes
 - **Backend**: Express.js + Socket.IO
 - **Database**: Supabase (PostgreSQL)
 - **Styling**: TailwindCSS 4 with shadcn-svelte components
