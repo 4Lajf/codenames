@@ -1,6 +1,6 @@
 import type { Server } from 'socket.io';
 import * as db from '../db';
-import { prepareGameCards } from './cards';
+import { prepareGameCards, shuffle } from './cards';
 import { broadcastGameState } from '../handlers/broadcast';
 
 export async function startGameLogic(
@@ -14,9 +14,11 @@ export async function startGameLogic(
   const firstTeam: 'red' | 'blue' = Math.random() < 0.5 ? 'red' : 'blue';
 
   // Get words - use only custom words (no fallback)
+  // Shuffle custom words first to ensure different words are selected each round
   let words: string[];
   if (customWords && customWords.length >= 25) {
-    words = customWords.slice(0, 25);
+    const shuffledCustomWords = shuffle(customWords);
+    words = shuffledCustomWords.slice(0, 25);
   } else {
     throw new Error('Need at least 25 custom words to start a game');
   }
