@@ -2,15 +2,6 @@
 
 A real-time multiplayer implementation of the classic board game Codenames, built with SvelteKit, Socket.IO, and Supabase.
 
-## Features
-
-- Real-time multiplayer gameplay
-- Room-based matchmaking with shareable codes
-- Team selection (Red vs Blue)
-- Role-based views (Spymaster sees all, Operatives see revealed only)
-- Complete game logic (clues, guessing, turn management)
-- Persistent sessions with automatic reconnection
-
 ## Tech Stack
 
 - **Frontend**: SvelteKit 5 with Svelte 5 runes
