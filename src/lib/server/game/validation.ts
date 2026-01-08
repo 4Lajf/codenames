@@ -2,28 +2,14 @@ import type { RoomPlayerWithDetails } from '../db';
 
 /**
  * Validate a clue word against board words
- * - Cannot be the same as any word on the board
- * - Cannot contain any board word as substring (optional strict mode)
+ * - Cannot be empty
  */
 export function validateClueWord(word: string, boardWords: string[]): { valid: boolean; error?: string } {
   const normalizedClue = word.toLowerCase().trim();
-  const normalizedBoard = boardWords.map(w => w.toLowerCase());
   
   // Clue cannot be empty
   if (normalizedClue.length === 0) {
     return { valid: false, error: 'Clue cannot be empty' };
-  }
-
-  // Clue cannot match any board word exactly
-  if (normalizedBoard.includes(normalizedClue)) {
-    return { valid: false, error: 'Clue cannot be a word on the board' };
-  }
-  
-  // Clue cannot be a substring of board words (loose check)
-  for (const boardWord of normalizedBoard) {
-    if (boardWord.includes(normalizedClue) || normalizedClue.includes(boardWord)) {
-      return { valid: false, error: `Clue cannot contain or be contained in "${boardWord}"` };
-    }
   }
   
   return { valid: true };
