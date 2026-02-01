@@ -23,8 +23,8 @@ export function validateClueCount(count: number): { valid: boolean; error?: stri
     return { valid: false, error: 'Count must be an integer' };
   }
   
-  if (count < 0 || count > 9) {
-    return { valid: false, error: 'Count must be between 0 and 9' };
+  if (count < -1 || count > 9) {
+    return { valid: false, error: 'Count must be between -1 and 9' };
   }
   
   return { valid: true };

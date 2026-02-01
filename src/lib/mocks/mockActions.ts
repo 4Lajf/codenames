@@ -67,7 +67,7 @@ export function mockGiveClue(word: string, count: number, gameState: GameState):
   const newState = JSON.parse(JSON.stringify(gameState));
   
   newState.clue = { word, count };
-  newState.guessesRemaining = count + 1; // +1 bonus guess
+  newState.guessesRemaining = (count === 0 || count === -1) ? 999 : count + 1; // +1 bonus guess (or unlimited if 0 or -1)
   
   newState.log.push({
     type: 'clue',

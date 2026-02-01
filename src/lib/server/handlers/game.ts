@@ -247,8 +247,8 @@ export function handleGameEvents(io: Server, socket: Socket) {
       }
 
       // Update game with clue
-      // If count is 0, set guesses_remaining to 999 (unlimited) instead of 1
-      const guessesRemaining = count === 0 ? 999 : count + 1; // +1 bonus guess (or unlimited if 0)
+      // If count is 0 or -1, set guesses_remaining to 999 (unlimited) instead of count+1
+      const guessesRemaining = (count === 0 || count === -1) ? 999 : count + 1; // +1 bonus guess (or unlimited if 0 or -1)
       
       const updatedGame = await db.updateGameState(game.id, {
         clue_word: word.toUpperCase(),
@@ -260,9 +260,8 @@ export function handleGameEvents(io: Server, socket: Socket) {
       if (gameTimers[roomCode] && gameTimers[roomCode].settings.enabled) {
         const timer = gameTimers[roomCode].timers[game.current_turn];
         const settings = gameTimers[roomCode].settings;
-        const duration = timer.isFirstRound 
-          ? settings.operativeDuration + settings.firstRoundBonus
-          : settings.operativeDuration;
+        // First round bonus only applies to spymaster turns, not operative turns
+        const duration = settings.operativeDuration;
         
         timer.timeRemaining = duration;
         timer.isPaused = false;

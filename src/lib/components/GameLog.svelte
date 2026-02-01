@@ -6,14 +6,7 @@
 
   let { entries = [] }: { entries: LogEntry[] } = $props();
   
-  let bottomRef: HTMLElement | undefined = $state();
-
-  $effect(() => {
-    entries;
-    if (bottomRef) {
-      bottomRef.scrollIntoView({ behavior: 'smooth' });
-    }
-  });
+  // Auto-scroll disabled - user can manually scroll through the log
 
   function parseClue(message: string) {
     const match = message.match(/^(.+) gives clue: (.+)$/);
@@ -82,7 +75,7 @@
                   {parseClue(entry.message)?.player}
                 </span>
                 <span class="text-white/70 font-medium"> gives clue </span>
-                <span class="font-bold text-white uppercase">{parseClue(entry.message)?.clue} {parseClue(entry.message)?.count === '0' ? '∞' : parseClue(entry.message)?.count}</span>
+                <span class="font-bold text-white uppercase">{parseClue(entry.message)?.clue} {parseClue(entry.message)?.count === '-1' ? '∞' : parseClue(entry.message)?.count}</span>
               </div>
             {/if}
           {:else if entry.type === 'guess'}
@@ -120,7 +113,6 @@
         {#if entries.length === 0}
           <div class="text-center text-white/40 italic text-xs lg:text-sm">Waiting for first move...</div>
         {/if}
-        <div bind:this={bottomRef}></div>
       </div>
     </ScrollArea>
   </div>

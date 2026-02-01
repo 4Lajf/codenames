@@ -541,7 +541,8 @@ function createGameStore(): GameStore {
           ? settings.spymasterDuration 
           : settings.operativeDuration;
         
-        const duration = timer.isFirstRound 
+        // Only apply first round bonus to spymaster turns
+        const duration = (timer.isFirstRound && isSpymasterTurn)
           ? baseDuration + settings.firstRoundBonus
           : baseDuration;
         

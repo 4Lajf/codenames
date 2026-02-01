@@ -7,7 +7,7 @@
   let count = $state(1);
   let showCountMenu = $state(false);
 
-  const countOptions = [1, 2, 3, 4, 5, 6, 7, 8, 9, 0];
+  const countOptions = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, -1];
 
   // Sync count with selectedCount when it changes
   $effect(() => {
@@ -31,7 +31,9 @@
   }
 
   function displayCount(n: number): string {
-    return n === 0 ? '∞' : String(n);
+    if (n === -1) return '∞';
+    if (n === 0) return '0';
+    return String(n);
   }
 </script>
 

@@ -187,6 +187,12 @@
     return 'Game is starting...';
   }
 
+  function displayClueCount(count: number): string {
+    if (count === -1) return '∞';
+    if (count === 0) return '0';
+    return String(count);
+  }
+
   async function handleCardClick(index: number) {
     if ($canGuess) {
       const result = await game.revealCard(index);
@@ -396,25 +402,87 @@
     await playRoundStartSound($soundSettings.soundFile, $soundSettings.gain);
   }
 
-  // Sound notification on turn change
+  // Sound notifications: role-scoped triggers for 4 distinct groups
+  // Red spymaster, Red operatives, Blue spymaster, Blue operatives
+  
+  // Spymaster-phase sound: plays when turn changes to their team (spymaster phase begins)
   let previousTurn = $state<'red' | 'blue' | null>(null);
   let hasSeenTurn = $state(false);
   
   $effect(() => {
-    // Play sound when turn changes to my team
-    if ($game.status === 'playing' && $game.currentTurn && myPlayer?.team) {
+    if ($game.status === 'playing' && $game.currentTurn && myPlayer?.team && myPlayer?.role === 'spymaster') {
       const isMyTeamTurn = $game.currentTurn === myPlayer.team;
+      const isSpymasterPhase = $game.clue === null; // No clue yet = spymaster phase
       const turnChanged = hasSeenTurn && previousTurn !== null && previousTurn !== $game.currentTurn;
       
-      if (isMyTeamTurn && turnChanged && $soundSettings.enabled) {
+      // Only play if: turn changed to my team, I'm spymaster, clue is null (spymaster phase), and we've seen at least one turn
+      if (isMyTeamTurn && isSpymasterPhase && turnChanged && $soundSettings.enabled) {
         playRoundStartSound($soundSettings.soundFile, $soundSettings.gain);
       }
       
-      previousTurn = $game.currentTurn;
-      hasSeenTurn = true;
+      // Only update tracking state when values actually change to prevent loops
+      if (previousTurn !== $game.currentTurn) {
+        previousTurn = $game.currentTurn;
+      }
+      if (!hasSeenTurn) {
+        hasSeenTurn = true;
+      }
     } else if ($game.status !== 'playing') {
-      previousTurn = null;
-      hasSeenTurn = false;
+      // Reset trackers when game ends or returns to lobby
+      if (previousTurn !== null) {
+        previousTurn = null;
+      }
+      if (hasSeenTurn) {
+        hasSeenTurn = false;
+      }
+    }
+  });
+  
+  // Operative-phase sound: plays when clue is given to their team
+  let lastClueSignature = $state<string | null>(null);
+  let hasSeenNoClueState = $state(false);
+  
+  $effect(() => {
+    if ($game.status === 'playing' && $game.currentTurn && myPlayer?.team && myPlayer?.role === 'operative') {
+      const isMyTeamTurn = $game.currentTurn === myPlayer.team;
+      const hasClue = $game.clue !== null;
+      
+      // Create clue signature: turn:word:count (or null if no clue)
+      const clueSignature = hasClue 
+        ? `${$game.currentTurn}:${$game.clue.word}:${$game.clue.count}`
+        : null;
+      
+      // Play sound if:
+      // 1. It's my team's turn
+      // 2. I'm an operative
+      // 3. Clue exists
+      // 4. Clue signature changed from null to a value (new clue given)
+      // 5. We've seen a "no clue" state before (prevents initial load playback when clue already exists)
+      const clueJustGiven = lastClueSignature === null && clueSignature !== null;
+      const shouldPlay = isMyTeamTurn && hasClue && clueJustGiven && hasSeenNoClueState && $soundSettings.enabled;
+      
+      if (shouldPlay) {
+        playRoundStartSound($soundSettings.soundFile, $soundSettings.gain);
+      }
+      
+      // Update tracking state (only when values change to prevent loops)
+      if (lastClueSignature !== clueSignature) {
+        lastClueSignature = clueSignature;
+      }
+      
+      // Track that we've seen a "no clue" state (prevents initial load playback)
+      // This is set to true when clue is null, and stays true even when clue is given
+      if (!hasClue && !hasSeenNoClueState) {
+        hasSeenNoClueState = true;
+      }
+    } else if ($game.status !== 'playing') {
+      // Reset trackers when game ends or returns to lobby
+      if (lastClueSignature !== null) {
+        lastClueSignature = null;
+      }
+      if (hasSeenNoClueState) {
+        hasSeenNoClueState = false;
+      }
     }
   });
 </script>
@@ -873,7 +941,7 @@
        <div class="fixed bottom-2 sm:bottom-4 md:bottom-6 left-1/2 -translate-x-1/2 z-30 animate-in fade-in slide-in-from-bottom-4 pointer-events-none max-w-[95vw]">
           <div class="bg-white text-black px-4 sm:px-6 md:px-8 py-2 sm:py-3 rounded-lg shadow-2xl border border-gray-300 flex items-center gap-2 sm:gap-3">
              <span class="text-lg sm:text-2xl md:text-3xl font-black tracking-wide uppercase truncate max-w-[50vw]">{$game.clue.word}</span>
-             <span class="text-base sm:text-xl md:text-2xl font-bold bg-gray-200 px-2 sm:px-3 py-0.5 sm:py-1 rounded-md shrink-0">{$game.clue.count === 0 ? '∞' : $game.clue.count}</span>
+             <span class="text-base sm:text-xl md:text-2xl font-bold bg-gray-200 px-2 sm:px-3 py-0.5 sm:py-1 rounded-md shrink-0">{displayClueCount($game.clue.count)}</span>
           </div>
        </div>
     {/if}
@@ -883,7 +951,7 @@
        <div class="fixed inset-0 z-50 flex items-center justify-center pointer-events-none px-4" transition:scale={{ start: 0.9, duration: 300 }}>
           <div class="bg-white text-black px-6 sm:px-8 md:px-12 py-4 sm:py-5 md:py-6 rounded-lg shadow-2xl border border-gray-300 flex items-center gap-3 sm:gap-4 max-w-[90vw]">
              <span class="text-2xl sm:text-3xl md:text-5xl font-black tracking-wide uppercase truncate">{$game.clue.word}</span>
-             <span class="text-xl sm:text-2xl md:text-4xl font-bold bg-gray-200 px-3 sm:px-4 py-1 sm:py-2 rounded-md shrink-0">{$game.clue.count === 0 ? '∞' : $game.clue.count}</span>
+             <span class="text-xl sm:text-2xl md:text-4xl font-bold bg-gray-200 px-3 sm:px-4 py-1 sm:py-2 rounded-md shrink-0">{displayClueCount($game.clue.count)}</span>
           </div>
        </div>
     {/if}
