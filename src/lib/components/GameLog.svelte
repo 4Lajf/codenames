@@ -45,7 +45,7 @@
     switch (cardType.toLowerCase()) {
       case 'red': return 'bg-red-600 text-white';
       case 'blue': return 'bg-blue-600 text-white';
-      case 'neutral': return 'bg-amber-200 text-amber-900';
+      case 'neutral': return 'bg-gray-500 text-white';
       case 'assassin': return 'bg-black text-white';
       default: return 'bg-gray-300 text-gray-800';
     }
@@ -67,33 +67,33 @@
 </script>
 
 <Card.Root class="h-full flex flex-col shadow-xl bg-gray-900/50 backdrop-blur-sm border-2 border-gray-700/50 overflow-hidden py-0! gap-0!">
-  <div class="py-1.5 px-3 border-b border-white/20 bg-gray-800/50 text-center">
-    <span class="text-sm font-bold text-white/90">Game log</span>
+  <div class="py-1 lg:py-1.5 px-2 lg:px-3 border-b border-white/20 bg-gray-800/50 text-center shrink-0">
+    <span class="text-xs lg:text-sm font-bold text-white/90">Game log</span>
   </div>
   
-  <div class="flex-1 min-h-0 relative pb-2">
+  <div class="flex-1 min-h-0 relative pb-1 lg:pb-2 overflow-hidden">
     <ScrollArea class="h-full w-full">
-      <div class="px-3 py-1 pb-3 space-y-1.5">
+      <div class="px-2 lg:px-3 py-1 pb-2 lg:pb-3 space-y-1 lg:space-y-1.5">
         {#each entries as entry}
           {#if entry.type === 'clue'}
             {#if parseClue(entry.message)}
-              <div class="text-sm leading-relaxed p-1.5 rounded-md my-0.5 {entry.team === 'red' ? 'bg-red-900/30' : 'bg-blue-900/30'}">
+              <div class="text-xs lg:text-sm leading-relaxed p-1 lg:p-1.5 rounded-md my-0.5 {entry.team === 'red' ? 'bg-red-900/30' : 'bg-blue-900/30'}">
                 <span class={cn("font-semibold", entry.team === 'red' ? "text-red-400" : "text-blue-400")}>
                   {parseClue(entry.message)?.player}
                 </span>
                 <span class="text-white/70 font-medium"> gives clue </span>
-                <span class="font-bold text-white uppercase">{parseClue(entry.message)?.clue} {parseClue(entry.message)?.count}</span>
+                <span class="font-bold text-white uppercase">{parseClue(entry.message)?.clue} {parseClue(entry.message)?.count === '0' ? '∞' : parseClue(entry.message)?.count}</span>
               </div>
             {/if}
           {:else if entry.type === 'guess'}
             {#if parseGuess(entry.message)}
               {@const guess = parseGuess(entry.message)}
-              <div class="text-sm leading-relaxed p-1.5 rounded-md my-0.5 {entry.team === 'red' ? 'bg-red-900/30' : 'bg-blue-900/30'}">
+              <div class="text-xs lg:text-sm leading-relaxed p-1 lg:p-1.5 rounded-md my-0.5 {entry.team === 'red' ? 'bg-red-900/30' : 'bg-blue-900/30'}">
                 <span class={cn("font-semibold", entry.team === 'red' ? "text-red-400" : "text-blue-400")}>
                   {guess?.player}
                 </span>
                 <span class="text-white/70 font-medium"> taps </span>
-                <span class="inline-block px-1.5 py-0.5 rounded text-xs font-bold uppercase {getCardTypeColor(guess?.cardType || '')}">
+                <span class="inline-block px-1 lg:px-1.5 py-0.5 rounded text-[10px] lg:text-xs font-bold uppercase {getCardTypeColor(guess?.cardType || '')}">
                   {guess?.card}
                 </span>
               </div>
@@ -101,7 +101,7 @@
           {:else if entry.type === 'turn'}
             {@const turnInfo = parseTurnMessage(entry.message)}
             {#if turnInfo}
-              <div class="text-sm text-white/60 italic font-medium py-1">
+              <div class="text-xs lg:text-sm text-white/60 italic font-medium py-0.5 lg:py-1">
                 {#if turnInfo.endedBy}
                   <span class="text-white/70">{turnInfo.endedBy}</span> ended the turn. 
                 {/if}
@@ -110,15 +110,15 @@
                 </span>
               </div>
             {:else}
-              <div class="text-sm text-white/50 italic font-medium">{entry.message}</div>
+              <div class="text-xs lg:text-sm text-white/50 italic font-medium">{entry.message}</div>
             {/if}
           {:else if entry.type === 'system'}
-            <div class="text-sm text-white/50 italic font-medium">{entry.message}</div>
+            <div class="text-xs lg:text-sm text-white/50 italic font-medium">{entry.message}</div>
           {/if}
         {/each}
         
         {#if entries.length === 0}
-          <div class="text-center text-white/40 italic text-sm">Waiting for first move...</div>
+          <div class="text-center text-white/40 italic text-xs lg:text-sm">Waiting for first move...</div>
         {/if}
         <div bind:this={bottomRef}></div>
       </div>

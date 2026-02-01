@@ -9,6 +9,7 @@
     clickable = false,
     markers = [],
     myTeam = null,
+    spymasterSelected = false,
     onclick,
     onmark
   }: { 
@@ -19,6 +20,7 @@
     clickable?: boolean;
     markers?: Array<{ nickname: string; team: 'red' | 'blue' | null }>;
     myTeam?: 'red' | 'blue' | null;
+    spymasterSelected?: boolean;
     onclick?: () => void;
     onmark?: () => void;
   } = $props();
@@ -32,7 +34,6 @@
     if (revealed) {
       showLabel = !showLabel;
     } else if (onmark) {
-      // Place marker on unrevealed cards
       onmark();
     }
   }
@@ -62,7 +63,7 @@
   disabled={false}
   aria-label={`Card: ${word}`}
 >
-  <div class="card-inner {typeClass()} {isRevealedClass}" class:spymaster-view={showType && !revealed}>
+  <div class="card-inner {typeClass()} {isRevealedClass}" class:spymaster-view={showType && !revealed} class:spymaster-selected={spymasterSelected && !revealed}>
       <!-- Guess handle for operatives -->
       {#if clickable && !revealed}
         <div 
@@ -81,6 +82,7 @@
           <Hand size={16} />
         </div>
       {/if}
+
 
       <!-- Player markers -->
       {#if markers.length > 0 && !revealed}
@@ -125,6 +127,7 @@
     border: none;
     padding: 0;
     position: relative;
+    min-width: 0;
   }
 
   .clickable {
@@ -140,7 +143,7 @@
     width: 100%;
     height: 100%;
     background-color: #e8dfa0;
-    border-radius: 8px;
+    border-radius: 6px;
     box-shadow: 0 2px 4px rgba(0,0,0,0.3);
     display: flex;
     flex-direction: column;
@@ -149,6 +152,12 @@
     transition: all 0.2s;
     border: 1px solid #d4c5a5;
     opacity: 0.92;
+  }
+
+  @media (min-width: 640px) {
+    .card-inner {
+      border-radius: 8px;
+    }
   }
 
   .card-inner.spymaster-view.red { background-color: #ffcccc; box-shadow: inset 0 0 0 3px #c41e3a; }
@@ -202,53 +211,110 @@
   }
   
   .overlay-icon {
-      font-size: 3rem;
+      font-size: 1.5rem;
       filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
+  }
+  
+  @media (min-width: 480px) {
+    .overlay-icon {
+      font-size: 2rem;
+    }
+  }
+  
+  @media (min-width: 768px) {
+    .overlay-icon {
+      font-size: 3rem;
+    }
   }
 
   .card-label {
       flex: 0 0 auto;
-      min-height: 42%;
+      min-height: 40%;
       background: #ffffff;
       display: flex;
       align-items: center;
       justify-content: center;
       border-top: 1px solid rgba(0,0,0,0.1);
-      padding: 0.35rem 0.5rem;
+      padding: 0.2rem 0.25rem;
+  }
+
+  @media (min-width: 480px) {
+    .card-label { 
+      padding: 0.3rem 0.4rem; 
+      min-height: 42%;
+    }
+  }
+  
+  @media (min-width: 768px) {
+    .card-label { 
+      padding: 0.4rem 0.6rem; 
+    }
   }
 
   .word {
     color: #333;
     font-weight: 700;
     text-transform: uppercase;
-    font-size: clamp(0.72rem, 1.6vw, 0.95rem);
-    letter-spacing: 0.5px;
+    font-size: 0.5rem;
+    letter-spacing: 0.25px;
     text-align: center;
-    line-height: 1.1;
+    line-height: 1.15;
     padding: 0;
     word-break: break-word;
     overflow: hidden;
     display: -webkit-box;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     -webkit-box-orient: vertical;
     text-wrap: balance;
+    hyphens: auto;
   }
 
+  /* Better responsive font sizing using container queries fallback */
+  @media (min-width: 360px) {
+    .word {
+      font-size: 0.55rem;
+    }
+  }
+  
+  @media (min-width: 480px) {
+    .word {
+      font-size: 0.65rem;
+      letter-spacing: 0.3px;
+    }
+  }
+  
   @media (min-width: 640px) {
-    .card-label { padding: 0.4rem 0.6rem; }
+    .word {
+      font-size: 0.75rem;
+      letter-spacing: 0.4px;
+    }
+  }
+  
+  @media (min-width: 900px) {
+    .word {
+      font-size: 0.85rem;
+      letter-spacing: 0.5px;
+    }
+  }
+  
+  @media (min-width: 1100px) {
+    .word {
+      font-size: 0.95rem;
+    }
   }
 
   /* Guess handle styling */
   .guess-handle {
     position: absolute;
-    top: 4px;
-    right: 4px;
+    top: 2px;
+    right: 2px;
     z-index: 10;
-    width: 28px;
-    height: 28px;
-    border-radius: 6px;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
     background: rgba(0, 0, 0, 0.7);
-    border: 2px solid rgba(255, 255, 255, 0.8);
+    border: 1.5px solid rgba(255, 255, 255, 0.8);
     color: white;
     display: flex;
     align-items: center;
@@ -257,6 +323,40 @@
     transition: all 0.15s ease;
     padding: 0;
     user-select: none;
+  }
+  
+  .guess-handle :global(svg) {
+    width: 12px;
+    height: 12px;
+  }
+  
+  @media (min-width: 480px) {
+    .guess-handle {
+      top: 3px;
+      right: 3px;
+      width: 24px;
+      height: 24px;
+      border-radius: 5px;
+    }
+    .guess-handle :global(svg) {
+      width: 14px;
+      height: 14px;
+    }
+  }
+  
+  @media (min-width: 768px) {
+    .guess-handle {
+      top: 4px;
+      right: 4px;
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      border-width: 2px;
+    }
+    .guess-handle :global(svg) {
+      width: 16px;
+      height: 16px;
+    }
   }
 
   .guess-handle:focus {
@@ -274,29 +374,78 @@
     transform: scale(0.95);
   }
 
+  /* Spymaster selection - flesh-colored border */
+  .card-inner.spymaster-selected {
+    box-shadow: 0 0 0 4px #e8b89d, 0 0 0 7px rgba(232, 184, 157, 0.5) !important;
+  }
+  
+  @media (min-width: 480px) {
+    .card-inner.spymaster-selected {
+      box-shadow: 0 0 0 5px #e8b89d, 0 0 0 9px rgba(232, 184, 157, 0.5) !important;
+    }
+  }
+  
+  @media (min-width: 768px) {
+    .card-inner.spymaster-selected {
+      box-shadow: 0 0 0 6px #ffdbc6, 0 0 0 11px rgba(232, 184, 157, 0.5) !important;
+    }
+  }
+
   /* Markers styling */
   .markers-container {
     position: absolute;
-    top: 4px;
-    left: 4px;
+    top: 2px;
+    left: 2px;
     z-index: 5;
     display: flex;
     flex-direction: column;
-    gap: 2px;
-    max-width: calc(100% - 40px);
+    gap: 1px;
+    max-width: calc(100% - 28px);
+  }
+  
+  @media (min-width: 480px) {
+    .markers-container {
+      top: 3px;
+      left: 3px;
+      gap: 2px;
+      max-width: calc(100% - 32px);
+    }
+  }
+  
+  @media (min-width: 768px) {
+    .markers-container {
+      top: 4px;
+      left: 4px;
+      max-width: calc(100% - 40px);
+    }
   }
 
   .marker {
-    font-size: 9px;
+    font-size: 7px;
     font-weight: 600;
-    padding: 2px 5px;
-    border-radius: 3px;
+    padding: 1px 3px;
+    border-radius: 2px;
     color: white;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     text-shadow: 0 1px 1px rgba(0,0,0,0.3);
     line-height: 1.2;
+  }
+  
+  @media (min-width: 480px) {
+    .marker {
+      font-size: 8px;
+      padding: 2px 4px;
+      border-radius: 3px;
+    }
+  }
+  
+  @media (min-width: 768px) {
+    .marker {
+      font-size: 9px;
+      padding: 2px 5px;
+    }
   }
 
   .marker-red {
@@ -313,6 +462,18 @@
 
   .marker-more {
     background: #374151;
-    font-size: 8px;
+    font-size: 6px;
+  }
+  
+  @media (min-width: 480px) {
+    .marker-more {
+      font-size: 7px;
+    }
+  }
+  
+  @media (min-width: 768px) {
+    .marker-more {
+      font-size: 8px;
+    }
   }
 </style>

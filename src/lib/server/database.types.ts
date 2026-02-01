@@ -175,6 +175,23 @@ export interface Database {
           created_at?: string;
         };
       };
+      word_bank: {
+        Row: {
+          id: string;
+          word: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          word: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          word?: string;
+          created_at?: string;
+        };
+      };
     };
   };
 }

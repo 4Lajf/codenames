@@ -2,6 +2,7 @@ import type { Server } from 'socket.io';
 import * as db from '../db';
 import { prepareGameCards, shuffle } from './cards';
 import { broadcastGameState } from '../handlers/broadcast';
+import { initializeGameTimers } from '../handlers/game';
 
 export async function startGameLogic(
   io: Server, 
@@ -14,29 +15,25 @@ export async function startGameLogic(
   const firstTeam: 'red' | 'blue' = Math.random() < 0.5 ? 'red' : 'blue';
 
   // Get words - use only custom words (no fallback)
-  // Shuffle custom words first to ensure different words are selected each round
+  // Always shuffle to ensure different words are selected each game
   let words: string[];
   if (customWords && customWords.length >= 25) {
-    const shuffledCustomWords = shuffle(customWords);
-    words = shuffledCustomWords.slice(0, 25);
+    // Shuffle the entire word list to ensure randomization
+    // prepareGameCards will select 25 random words from this shuffled list
+    words = shuffle([...customWords]);
   } else {
     throw new Error('Need at least 25 custom words to start a game');
   }
 
-  // Create game
   const game = await db.createGame(roomId, firstTeam);
 
-  // Prepare and create cards
   const cardData = prepareGameCards(words, firstTeam);
   const cards = await db.createGameCards(game.id, cardData);
 
-  // Update room status
   await db.updateRoomStatus(roomId, 'playing');
 
-  // Get all players for broadcast
   const players = await db.getRoomPlayers(roomId);
 
-  // Save log entry
   await db.createGameLog(
     game.id,
     'system',
@@ -44,7 +41,22 @@ export async function startGameLogic(
     null
   );
 
-  // Broadcast game started to all players
+  // Initialize timers with default settings
+  initializeGameTimers(io, roomCode, roomId, {
+    spymasterDuration: 120,
+    operativeDuration: 180,
+    firstRoundBonus: 60,
+    enabled: true
+  });
+
+  // Initialize timers with default settings
+  initializeGameTimers(io, roomCode, roomId, {
+    spymasterDuration: 120,
+    operativeDuration: 180,
+    firstRoundBonus: 60,
+    enabled: true
+  });
+
   await broadcastGameState(io, roomCode, game, cards, players);
   io.to(roomCode).emit('room:statusChanged', { status: 'playing' });
   io.to(roomCode).emit('game:started', { startedBy: startedByNickname });

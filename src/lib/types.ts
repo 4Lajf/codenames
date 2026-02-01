@@ -28,6 +28,19 @@ export interface CardMarker {
   playerId: string;
 }
 
+export interface TimerSettings {
+  spymasterDuration: number; // seconds
+  operativeDuration: number; // seconds
+  firstRoundBonus: number; // additional seconds for first round
+  enabled: boolean;
+}
+
+export interface TeamTimer {
+  timeRemaining: number; // seconds, can be negative
+  isPaused: boolean;
+  isFirstRound: boolean;
+}
+
 export interface GameState {
   status: 'lobby' | 'playing' | 'finished';
   cards: Card[];
@@ -39,6 +52,11 @@ export interface GameState {
   players: Player[];
   log: LogEntry[];
   cardMarkers: Record<number, CardMarker[]>;
+  timerSettings: TimerSettings;
+  teamTimers: {
+    red: TeamTimer;
+    blue: TeamTimer;
+  };
 }
 
 export interface RoomState {

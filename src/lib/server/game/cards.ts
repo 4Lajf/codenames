@@ -2,6 +2,8 @@ import type { Card } from '../database.types';
 
 export type CardType = 'red' | 'blue' | 'neutral' | 'assassin';
 
+export type MaskedCard = Omit<Card, 'type'> & { type: CardType | 'hidden' };
+
 /**
  * Generate card types for a game.
  * First team gets 9 cards, second team gets 8 cards.
@@ -32,6 +34,7 @@ export function shuffle<T>(array: T[]): T[] {
 
 /**
  * Prepare cards data for a new game
+ * Randomizes words, card types, and positions for a completely random board each game
  */
 export function prepareGameCards(
   words: string[], 
@@ -41,12 +44,20 @@ export function prepareGameCards(
     throw new Error('Need at least 25 words to create a game');
   }
 
+  // Randomly select 25 words from the available words
   const shuffledWords = shuffle(words).slice(0, 25);
+  
+  // Generate and shuffle card types
   const cardTypes = generateCardTypes(firstTeam);
+  
+  // Create array of positions (0-24) and shuffle them to randomize board layout
+  const positions = Array.from({ length: 25 }, (_, i) => i);
+  const shuffledPositions = shuffle(positions);
 
+  // Map words to shuffled positions and types
   const cards = shuffledWords.map((word, index) => ({
     word: word.toUpperCase(),
-    position: index,
+    position: shuffledPositions[index],
     type: cardTypes[index]
   }));
 
@@ -65,16 +76,17 @@ export function prepareGameCards(
     }
   }
 
-  return cards;
+  // Sort by position to ensure cards are in correct order (0-24)
+  return cards.sort((a, b) => a.position - b.position);
 }
 
 /**
  * Mask card information for operatives (hide unrevealed card types)
  */
-export function maskCardsForOperative(cards: Card[]): (Card & { type: CardType | 'hidden' })[] {
+export function maskCardsForOperative(cards: Card[]): MaskedCard[] {
   return cards.map(card => ({
     ...card,
-    type: card.revealed ? card.type : 'hidden' as const
+    type: card.revealed ? card.type : ('hidden' as const)
   }));
 }
 

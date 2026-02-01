@@ -1,5 +1,5 @@
 import { supabase } from '../supabaseAdmin';
-import type { Player, Room, RoomPlayer, Game, Card } from '../database.types';
+import type { Player, Room, RoomPlayer, Game, Card, Database } from '../database.types';
 import { v4 as uuidv4 } from 'uuid';
 
 // Generate a short public ID for players
@@ -19,12 +19,12 @@ export async function createPlayer(nickname: string): Promise<Player> {
     .insert({ 
       public_id: publicId, 
       nickname 
-    })
+    } as any)
     .select()
     .single();
 
   if (error) throw error;
-  return data;
+  return data as Player;
 }
 
 export async function getPlayer(id: string): Promise<Player | null> {
@@ -52,7 +52,8 @@ export async function getPlayerByPublicId(publicId: string): Promise<Player | nu
 export async function updatePlayerNickname(id: string, nickname: string): Promise<void> {
   const { error } = await supabase
     .from('players')
-    .update({ nickname })
+    // @ts-ignore - Supabase type inference issue
+    .update({ nickname } as any)
     .eq('id', id);
 
   if (error) throw error;
@@ -69,12 +70,12 @@ export async function createRoom(code: string, hostPlayerId: string): Promise<Ro
       code: code.toUpperCase(),
       host_player_id: hostPlayerId,
       status: 'waiting'
-    })
+    } as any)
     .select()
     .single();
 
   if (error) throw error;
-  return data;
+  return data as Room;
 }
 
 export async function getRoomByCode(code: string): Promise<Room | null> {
@@ -102,14 +103,16 @@ export async function getRoomById(id: string): Promise<Room | null> {
 export async function updateRoomStatus(roomId: string, status: Room['status']): Promise<void> {
   const { error } = await supabase
     .from('rooms')
-    .update({ status })
+    // @ts-ignore - Supabase type inference issue
+    .update({ status } as any)
     .eq('id', roomId);
 
   if (error) throw error;
 }
 
 export async function updateRoomHost(roomId: string, hostPlayerId: string | null): Promise<void> {
-  const { error } = await supabase
+  // @ts-ignore - Supabase type inference issue
+  const { error } = await (supabase as any)
     .from('rooms')
     .update({ host_player_id: hostPlayerId })
     .eq('id', roomId);
@@ -137,17 +140,18 @@ export async function joinRoom(roomId: string, playerId: string): Promise<RoomPl
 
   const { data, error } = await supabase
     .from('room_players')
+    // @ts-ignore - Supabase type inference issue
     .insert({ 
       room_id: roomId, 
       player_id: playerId,
       team: null,
       role: null
-    })
+    } as any)
     .select()
     .single();
 
   if (error) throw error;
-  return data;
+  return data as RoomPlayer;
 }
 
 export async function leaveRoom(roomId: string, playerId: string): Promise<void> {
@@ -180,7 +184,8 @@ export async function setTeamAndRole(
 ): Promise<void> {
   const { error } = await supabase
     .from('room_players')
-    .update({ team, role })
+    // @ts-ignore - Supabase type inference issue
+    .update({ team: team ?? null, role: role ?? null } as any)
     .eq('room_id', roomId)
     .eq('player_id', playerId);
 
@@ -204,10 +209,10 @@ export async function getRoomPlayers(roomId: string): Promise<RoomPlayerWithDeta
 
   if (error) throw error;
   
-  return (data || []).map(rp => ({
+  return ((data || []) as any[]).map((rp: any) => ({
     ...rp,
-    nickname: (rp.players as any)?.nickname || 'Unknown',
-    public_id: (rp.players as any)?.public_id || ''
+    nickname: rp.players?.nickname || 'Unknown',
+    public_id: rp.players?.public_id || ''
   }));
 }
 
@@ -246,12 +251,12 @@ export async function createGame(roomId: string, firstTeam: 'red' | 'blue'): Pro
       current_turn: firstTeam,
       red_cards_remaining: firstTeam === 'red' ? 9 : 8,
       blue_cards_remaining: firstTeam === 'blue' ? 9 : 8
-    })
+    } as any)
     .select()
     .single();
 
   if (error) throw error;
-  return data;
+  return data as Game;
 }
 
 export async function getGameByRoomId(roomId: string): Promise<Game | null> {
@@ -277,12 +282,12 @@ export async function getGameById(gameId: string): Promise<Game | null> {
 }
 
 export async function updateGameState(gameId: string, updates: Partial<Game>): Promise<Game> {
-  const { data, error } = await supabase
+  const { data, error } = await ((supabase as any)
     .from('games')
     .update(updates)
     .eq('id', gameId)
     .select()
-    .single();
+    .single()) as { data: Game; error: any };
 
   if (error) throw error;
   return data;
@@ -312,11 +317,11 @@ export async function createGameCards(gameId: string, cards: Array<{ word: strin
 
   const { data, error } = await supabase
     .from('cards')
-    .insert(cardsToInsert)
+    .insert(cardsToInsert as any)
     .select();
 
   if (error) throw error;
-  return data;
+  return (data || []) as Card[];
 }
 
 export async function getGameCards(gameId: string): Promise<Card[]> {
@@ -345,17 +350,18 @@ export async function getCardByPosition(gameId: string, position: number): Promi
 export async function revealCard(cardId: string, playerId: string): Promise<Card> {
   const { data, error } = await supabase
     .from('cards')
+    // @ts-ignore - Supabase type inference issue
     .update({ 
       revealed: true, 
       revealed_at: new Date().toISOString(),
       revealed_by: playerId
-    })
+    } as any)
     .eq('id', cardId)
     .select()
     .single();
 
   if (error) throw error;
-  return data;
+  return data as Card;
 }
 
 // ============================================
@@ -374,7 +380,7 @@ export async function getRandomWords(count: number = 25): Promise<string[]> {
   }
 
   // Shuffle and take first 'count' words
-  const shuffled = [...data].sort(() => Math.random() - 0.5);
+  const shuffled = [...(data as Array<{ word: string }>)].sort(() => Math.random() - 0.5);
   return shuffled.slice(0, count).map(w => w.word);
 }
 
@@ -395,7 +401,7 @@ export async function createGameLog(
       type,
       message,
       team: team || null
-    });
+    } as any);
 
   if (error) throw error;
 }
@@ -414,7 +420,7 @@ export async function getGameLogs(gameId: string): Promise<Array<{
 
   if (error) throw error;
 
-  return (data || []).map(log => ({
+  return ((data || []) as any[]).map((log: any) => ({
     type: log.type as 'system' | 'clue' | 'guess' | 'turn',
     team: log.team as 'red' | 'blue' | null | undefined,
     message: log.message,

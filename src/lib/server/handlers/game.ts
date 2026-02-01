@@ -17,6 +17,140 @@ import { startGameLogic } from '../game/logic';
 // In-memory cache for card markers (in production, store in database)
 const cardMarkersCache: Record<string, Record<number, Array<{ playerId: string; nickname: string; team: 'red' | 'blue' | null }>>> = {};
 
+// In-memory storage for game timers (roomCode -> timer state)
+interface TeamTimer {
+  timeRemaining: number; // seconds, can be negative
+  isPaused: boolean;
+  isFirstRound: boolean;
+}
+
+interface TimerSettings {
+  spymasterDuration: number;
+  operativeDuration: number;
+  firstRoundBonus: number;
+  enabled: boolean;
+}
+
+const gameTimers: Record<string, {
+  settings: TimerSettings;
+  timers: {
+    red: TeamTimer;
+    blue: TeamTimer;
+  };
+  roomId: string; // Store roomId for quick access
+}> = {};
+
+// Room to game cache for timer ticks
+const roomGameCache: Record<string, { game: Game | null; expires: number }> = {};
+const CACHE_TTL = 2000; // 2 seconds
+
+async function getGameForRoom(roomCode: string): Promise<Game | null> {
+  const cached = roomGameCache[roomCode];
+  if (cached && cached.expires > Date.now()) {
+    return cached.game;
+  }
+  
+  try {
+    const room = await db.getRoomByCode(roomCode);
+    if (!room) {
+      roomGameCache[roomCode] = { game: null, expires: Date.now() + CACHE_TTL };
+      return null;
+    }
+    
+    const game = await db.getGameByRoomId(room.id);
+    roomGameCache[roomCode] = {
+      game: game || null,
+      expires: Date.now() + CACHE_TTL
+    };
+    return game || null;
+  } catch {
+    roomGameCache[roomCode] = { game: null, expires: Date.now() + CACHE_TTL };
+    return null;
+  }
+}
+
+// Timer tick interval (runs every second)
+let timerInterval: NodeJS.Timeout | null = null;
+
+function startTimerTick(io: Server) {
+  if (timerInterval) return; // Already running
+  
+  timerInterval = setInterval(async () => {
+    for (const [roomCode, timerData] of Object.entries(gameTimers)) {
+      if (!timerData.settings.enabled) continue;
+      
+      const room = io.sockets.adapter.rooms.get(roomCode);
+      if (!room || room.size === 0) continue;
+      
+      const game = await getGameForRoom(roomCode);
+      if (!game || game.winner) continue;
+      
+      const currentTeam = game.current_turn;
+      const timer = timerData.timers[currentTeam];
+      
+      if (!timer.isPaused && timer.timeRemaining > -999999) {
+        timer.timeRemaining -= 1;
+        
+        // Broadcast timer update to all clients
+        io.to(roomCode).emit('game:timerUpdate', {
+          team: currentTeam,
+          timeRemaining: timer.timeRemaining,
+          isPaused: timer.isPaused
+        });
+      }
+    }
+  }, 1000);
+}
+
+// Initialize timers for a game
+function initializeGameTimers(io: Server, roomCode: string, roomId: string, settings: TimerSettings) {
+  const spymasterDuration = settings.spymasterDuration + settings.firstRoundBonus;
+  
+  gameTimers[roomCode] = {
+    settings,
+    timers: {
+      red: {
+        timeRemaining: spymasterDuration,
+        isPaused: true,
+        isFirstRound: true
+      },
+      blue: {
+        timeRemaining: spymasterDuration,
+        isPaused: true,
+        isFirstRound: true
+      }
+    },
+    roomId
+  };
+  
+  // Start timer tick if not already running
+  startTimerTick(io);
+}
+
+// Get timer state for a room
+function getTimerState(roomCode: string): { settings: TimerSettings; timers: { red: TeamTimer; blue: TeamTimer } } | null {
+  return gameTimers[roomCode] || null;
+}
+
+// Export timer functions and cleanup functions for use in other modules
+export { initializeGameTimers, getTimerState };
+
+// Export cleanup function for room deletion
+export function cleanupRoomData(roomCode: string, gameId?: string) {
+  // Clean up timers
+  if (gameTimers[roomCode]) {
+    delete gameTimers[roomCode];
+  }
+  // Clean up room game cache
+  if (roomGameCache[roomCode]) {
+    delete roomGameCache[roomCode];
+  }
+  // Clean up card markers cache if gameId provided
+  if (gameId && cardMarkersCache[gameId]) {
+    delete cardMarkersCache[gameId];
+  }
+}
+
 // Game event handlers
 export function handleGameEvents(io: Server, socket: Socket) {
   const player = socket.data.player as TokenPayload;
@@ -113,11 +247,32 @@ export function handleGameEvents(io: Server, socket: Socket) {
       }
 
       // Update game with clue
+      // If count is 0, set guesses_remaining to 999 (unlimited) instead of 1
+      const guessesRemaining = count === 0 ? 999 : count + 1; // +1 bonus guess (or unlimited if 0)
+      
       const updatedGame = await db.updateGameState(game.id, {
         clue_word: word.toUpperCase(),
         clue_count: count,
-        guesses_remaining: count + 1 // +1 bonus guess
+        guesses_remaining: guessesRemaining
       });
+
+      // Start operative timer when clue is given
+      if (gameTimers[roomCode] && gameTimers[roomCode].settings.enabled) {
+        const timer = gameTimers[roomCode].timers[game.current_turn];
+        const settings = gameTimers[roomCode].settings;
+        const duration = timer.isFirstRound 
+          ? settings.operativeDuration + settings.firstRoundBonus
+          : settings.operativeDuration;
+        
+        timer.timeRemaining = duration;
+        timer.isPaused = false;
+        
+        io.to(roomCode).emit('game:timerUpdate', {
+          team: game.current_turn,
+          timeRemaining: timer.timeRemaining,
+          isPaused: timer.isPaused
+        });
+      }
 
       // Save log entry
       await db.createGameLog(
@@ -178,8 +333,9 @@ export function handleGameEvents(io: Server, socket: Socket) {
         return callback({ error: 'Wait for the spymaster to give a clue' });
       }
 
-      // Check guesses remaining
-      if ((game.guesses_remaining || 0) <= 0) {
+      // Check guesses remaining (but allow unlimited guesses if 999)
+      const guessesRemaining = game.guesses_remaining || 0;
+      if (guessesRemaining <= 0) {
         return callback({ error: 'No guesses remaining' });
       }
 
@@ -250,6 +406,30 @@ export function handleGameEvents(io: Server, socket: Socket) {
             `${newTurn} team's turn`,
             null
           );
+          
+          // Start spymaster timer for new turn
+          if (gameTimers[roomCode] && gameTimers[roomCode].settings.enabled) {
+            const timer = gameTimers[roomCode].timers[newTurn];
+            const settings = gameTimers[roomCode].settings;
+            const duration = timer.isFirstRound 
+              ? settings.spymasterDuration + settings.firstRoundBonus
+              : settings.spymasterDuration;
+            
+            timer.timeRemaining = duration;
+            timer.isPaused = false;
+            
+            // Mark previous team's first round as complete
+            if (game.current_turn) {
+              gameTimers[roomCode].timers[game.current_turn].isFirstRound = false;
+            }
+            
+            io.to(roomCode).emit('game:timerUpdate', {
+              team: newTurn,
+              timeRemaining: timer.timeRemaining,
+              isPaused: timer.isPaused
+            });
+          }
+          
           io.to(roomCode).emit('game:turnChanged', {
             newTurn
           });
@@ -317,6 +497,29 @@ export function handleGameEvents(io: Server, socket: Socket) {
         `${player.nickname} ended the turn. ${newTurn} team's turn`,
         null
       );
+
+      // Start spymaster timer for new turn
+      if (gameTimers[roomCode] && gameTimers[roomCode].settings.enabled) {
+        const timer = gameTimers[roomCode].timers[newTurn];
+        const settings = gameTimers[roomCode].settings;
+        const duration = timer.isFirstRound 
+          ? settings.spymasterDuration + settings.firstRoundBonus
+          : settings.spymasterDuration;
+        
+        timer.timeRemaining = duration;
+        timer.isPaused = false;
+        
+        // Mark previous team's first round as complete
+        if (game.current_turn) {
+          gameTimers[roomCode].timers[game.current_turn].isFirstRound = false;
+        }
+        
+        io.to(roomCode).emit('game:timerUpdate', {
+          team: newTurn,
+          timeRemaining: timer.timeRemaining,
+          isPaused: timer.isPaused
+        });
+      }
 
       // Broadcast turn change
       io.to(roomCode).emit('game:turnChanged', {
@@ -411,7 +614,7 @@ export function handleGameEvents(io: Server, socket: Socket) {
   });
 
   // Reset game (host only)
-  socket.on('game:reset', async (data, callback) => {
+  socket.on('game:reset', async (data: { customWords?: string[] }, callback) => {
     try {
       const roomId = socket.data.roomId;
       const roomCode = socket.data.roomCode;
@@ -430,15 +633,10 @@ export function handleGameEvents(io: Server, socket: Socket) {
         return callback({ error: 'Only the host can reset the game' });
       }
 
-      // Get game before deleting to clean up logs and extract words
+      // Get game before deleting to clean up logs
       const game = await db.getGameByRoomId(roomId);
-      let previousWords: string[] | undefined;
       
       if (game) {
-        // Get words from previous game's cards
-        const previousCards = await db.getGameCards(game.id);
-        previousWords = previousCards.map(card => card.word);
-        
         // Delete game logs
         await db.deleteGameLogs(game.id);
         // Clear card markers cache
@@ -469,9 +667,23 @@ export function handleGameEvents(io: Server, socket: Socket) {
         players: formatPlayersForClient(updatedPlayers)
       });
 
-      // Automatically start a new game (like when creating a room)
-      // Use words from previous game if available
-      await startGameLogic(io, roomId, roomCode, player.nickname, previousWords);
+      // Clear timer state for this room
+      if (gameTimers[roomCode]) {
+        delete gameTimers[roomCode];
+      }
+      delete roomGameCache[roomCode];
+
+      // Automatically start a new game with new random words
+      // Use customWords from client if provided, otherwise fall back to previous game's words
+      let wordsToUse: string[] | undefined = data?.customWords;
+      
+      if (!wordsToUse && game) {
+        // Fallback: get words from previous game if no custom words provided
+        const previousCards = await db.getGameCards(game.id);
+        wordsToUse = previousCards.map(card => card.word);
+      }
+      
+      await startGameLogic(io, roomId, roomCode, player.nickname, wordsToUse);
 
       callback({ success: true });
     } catch (error: any) {
@@ -528,7 +740,7 @@ export function handleGameEvents(io: Server, socket: Socket) {
         success: true,
         status: 'playing',
         game: {
-          ...formatGameState(game, cards, players, canSeeAll),
+          ...formatGameState(game, cards, players, canSeeAll, room.code),
           log: logs
         },
         room: {
@@ -541,6 +753,88 @@ export function handleGameEvents(io: Server, socket: Socket) {
     } catch (error: any) {
       console.error('game:getState error:', error);
       callback({ error: error.message || 'Failed to get game state' });
+    }
+  });
+
+  // Update timer settings (host only)
+  socket.on('game:updateTimerSettings', async (data: { settings: any }, callback) => {
+    try {
+      const roomId = socket.data.roomId;
+      const roomCode = socket.data.roomCode;
+      
+      if (!roomId || !roomCode) {
+        return callback({ error: 'Not in a room' });
+      }
+
+      const room = await db.getRoomById(roomId);
+      if (!room) {
+        return callback({ error: 'Room not found' });
+      }
+
+      if (room.host_player_id !== player.id) {
+        return callback({ error: 'Only the host can update timer settings' });
+      }
+
+      // Update timer settings in memory
+      if (gameTimers[roomCode]) {
+        gameTimers[roomCode].settings = {
+          ...gameTimers[roomCode].settings,
+          ...data.settings
+        };
+      }
+
+      // Broadcast timer settings to all players in the room
+      io.to(roomCode).emit('game:timerSettingsUpdated', { settings: data.settings });
+
+      callback({ success: true });
+    } catch (error: any) {
+      console.error('game:updateTimerSettings error:', error);
+      callback({ error: error.message || 'Failed to update timer settings' });
+    }
+  });
+
+  // Toggle timer pause (team members only)
+  socket.on('game:toggleTimerPause', async (data: { team: 'red' | 'blue' }, callback) => {
+    try {
+      const roomId = socket.data.roomId;
+      const roomCode = socket.data.roomCode;
+      
+      if (!roomId || !roomCode) {
+        return callback({ error: 'Not in a room' });
+      }
+
+      const room = await db.getRoomById(roomId);
+      if (!room) {
+        return callback({ error: 'Room not found' });
+      }
+
+      const players = await db.getRoomPlayers(roomId);
+      const playerData = players.find(p => p.player_id === player.id);
+      
+      // Only allow team members to pause their own timer
+      if (playerData?.team !== data.team) {
+        return callback({ error: 'You can only pause your own team\'s timer' });
+      }
+
+      if (!gameTimers[roomCode]) {
+        return callback({ error: 'Timers not initialized' });
+      }
+
+      // Toggle pause state
+      const timer = gameTimers[roomCode].timers[data.team];
+      timer.isPaused = !timer.isPaused;
+
+      // Broadcast timer update
+      io.to(roomCode).emit('game:timerUpdate', {
+        team: data.team,
+        timeRemaining: timer.timeRemaining,
+        isPaused: timer.isPaused
+      });
+
+      callback({ success: true });
+    } catch (error: any) {
+      console.error('game:toggleTimerPause error:', error);
+      callback({ error: error.message || 'Failed to toggle timer pause' });
     }
   });
 }
@@ -608,9 +902,11 @@ function processGuessResult(game: Game, card: Card): {
 
   // Correct guess for current team
   if (card.type === currentTeam) {
-    const newGuessesRemaining = (game.guesses_remaining || 1) - 1;
+    const currentGuesses = game.guesses_remaining || 1;
+    const isUnlimited = currentGuesses === 999;
+    const newGuessesRemaining = isUnlimited ? 999 : currentGuesses - 1;
     
-    // Can continue guessing if guesses remain
+    // Can continue guessing if guesses remain (or unlimited)
     if (newGuessesRemaining > 0) {
       return {
         gameUpdates: {
@@ -655,8 +951,12 @@ function formatGameState(
   game: Game, 
   cards: Card[], 
   players: db.RoomPlayerWithDetails[],
-  canSeeAll: boolean
+  canSeeAll: boolean,
+  roomCode?: string
 ) {
+  // Get timer state if roomCode provided
+  const timerState = roomCode ? getTimerState(roomCode) : null;
+  
   return {
     status: game.winner ? 'finished' : 'playing',
     currentTurn: game.current_turn,
@@ -674,7 +974,17 @@ function formatGameState(
       revealed: card.revealed,
       position: card.position
     })),
-    players: formatPlayersForClient(players)
+    players: formatPlayersForClient(players),
+    timerSettings: timerState?.settings || {
+      spymasterDuration: 120,
+      operativeDuration: 180,
+      firstRoundBonus: 60,
+      enabled: true
+    },
+    teamTimers: timerState?.timers || {
+      red: { timeRemaining: 0, isPaused: false, isFirstRound: true },
+      blue: { timeRemaining: 0, isPaused: false, isFirstRound: true }
+    }
   };
 }
 

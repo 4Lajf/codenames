@@ -23,6 +23,7 @@ function createRoomStore() {
     socket.off('room:updated');
     socket.off('room:hostChanged');
     socket.off('room:statusChanged');
+    socket.off('room:kicked');
     socket.off('game:reset');
 
     socket.on('room:playerJoined', ({ player }: { player: Player }) => {
@@ -58,6 +59,16 @@ function createRoomStore() {
         ...s,
         status
       }));
+    });
+
+    socket.on('room:kicked', ({ reason }: { reason: string }) => {
+      // Player was kicked, reset room state and show message
+      set(initialState);
+      alert(reason || 'You have been kicked from the room');
+      // Redirect to home
+      if (typeof window !== 'undefined') {
+        window.location.href = '/';
+      }
     });
 
     // Handle game reset - room goes back to waiting, players are reset
@@ -176,6 +187,18 @@ function createRoomStore() {
     async transferHost(playerId: string): Promise<{ success: boolean; error?: string }> {
       try {
         await emitWithAck('room:transferHost', { playerId });
+        return { success: true };
+      } catch (error: any) {
+        return { success: false, error: error.message };
+      }
+    },
+
+    /**
+     * Kick a player from the room (host only)
+     */
+    async kickPlayer(playerId: string): Promise<{ success: boolean; error?: string }> {
+      try {
+        await emitWithAck('room:kickPlayer', { playerId });
         return { success: true };
       } catch (error: any) {
         return { success: false, error: error.message };

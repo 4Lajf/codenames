@@ -3,6 +3,7 @@ import * as db from '../db';
 import type { TokenPayload } from '../auth';
 import { broadcastGameState } from './broadcast';
 import { startGameLogic } from '../game/logic';
+import { cleanupRoomData } from './game';
 
 // Room event handlers
 export function handleRoomEvents(io: Server, socket: Socket) {
@@ -11,29 +12,24 @@ export function handleRoomEvents(io: Server, socket: Socket) {
   // Create a new room
   socket.on('room:create', async ({ code, customWords }: { code: string; customWords?: string[] }, callback) => {
     try {
-      // Check if room code already exists
       const existingRoom = await db.getRoomByCode(code);
       if (existingRoom) {
         return callback({ error: 'Room code already in use' });
       }
 
-      // Create room
       const room = await db.createRoom(code, player.id);
       
-      // Add player to room
+      // No need to check for duplicate nickname when creating a room (first player)
       await db.joinRoom(room.id, player.id);
       
-      // Store room info in socket data
       socket.data.roomId = room.id;
       socket.data.roomCode = room.code;
       
-      // Join socket to room channel
       socket.join(room.code);
 
       // Automatically start game for new rooms
       await startGameLogic(io, room.id, room.code, player.nickname, customWords);
 
-      // Get room players
       const players = await db.getRoomPlayers(room.id);
 
       callback({ 
@@ -61,20 +57,15 @@ export function handleRoomEvents(io: Server, socket: Socket) {
       }
       // Allow joining rooms in any status (waiting / playing / finished)
 
-      // Add player to room
       await db.joinRoom(room.id, player.id);
       
-      // Store room info in socket data
       socket.data.roomId = room.id;
       socket.data.roomCode = room.code;
       
-      // Join socket to room channel
       socket.join(room.code);
 
-      // Get updated player list
       const players = await db.getRoomPlayers(room.id);
 
-      // Broadcast to room that player joined
       socket.to(room.code).emit('room:playerJoined', {
         player: formatPlayerForClient(
           players.find(p => p.player_id === player.id)!,
@@ -82,7 +73,6 @@ export function handleRoomEvents(io: Server, socket: Socket) {
         )
       });
 
-      // Get host info
       const host = players.find(p => p.player_id === room.host_player_id);
 
       callback({ 
@@ -181,7 +171,6 @@ export function handleRoomEvents(io: Server, socket: Socket) {
 
       await db.setTeamAndRole(roomId, player.id, roomPlayer.team, role);
 
-      // Broadcast updated room state
       const players = await db.getRoomPlayers(roomId);
       io.to(roomCode).emit('room:updated', {
         players: formatPlayersForClient(players, player.id)
@@ -313,6 +302,103 @@ export function handleRoomEvents(io: Server, socket: Socket) {
       callback({ error: error.message || 'Failed to transfer host' });
     }
   });
+
+  // Kick player
+  socket.on('room:kickPlayer', async ({ playerId }: { playerId: string }, callback) => {
+    try {
+      const roomId = socket.data.roomId;
+      const roomCode = socket.data.roomCode;
+      
+      if (!roomId) {
+        return callback({ error: 'Not in a room' });
+      }
+
+      // Check if player is host
+      const room = await db.getRoomById(roomId);
+      if (!room || room.host_player_id !== player.id) {
+        return callback({ error: 'Only host can kick players' });
+      }
+
+      // Get all players and find target by public_id
+      const players = await db.getRoomPlayers(roomId);
+      const targetPlayer = players.find(p => p.public_id === playerId);
+      if (!targetPlayer) {
+        return callback({ error: 'Target player not in room' });
+      }
+
+      // Cannot kick yourself
+      if (targetPlayer.player_id === player.id) {
+        return callback({ error: 'Cannot kick yourself' });
+      }
+
+      // Find the socket of the player to kick
+      const socketsInRoom = await io.in(roomCode).fetchSockets();
+      const targetSocket = socketsInRoom.find(s => s.data.player?.id === targetPlayer.player_id);
+
+      if (targetSocket) {
+        // Notify the kicked player
+        targetSocket.emit('room:kicked', { reason: 'You have been kicked by the host' });
+        
+        // Remove player from room
+        await db.leaveRoom(roomId, targetPlayer.player_id);
+        
+        // Make them leave the socket room
+        targetSocket.leave(roomCode);
+        targetSocket.data.roomId = null;
+        targetSocket.data.roomCode = null;
+      } else {
+        // Player is not connected, just remove from database
+        await db.leaveRoom(roomId, targetPlayer.player_id);
+      }
+
+      // Get updated players list
+      const updatedPlayers = await db.getRoomPlayers(roomId);
+
+      // If no players left, delete the room
+      if (updatedPlayers.length === 0) {
+        // Get game info before deletion for cleanup
+        const game = await db.getGameByRoomId(roomId);
+        
+        // Clean up in-memory timers and cache
+        if (game) {
+          cleanupRoomData(roomCode, game.id);
+        } else {
+          cleanupRoomData(roomCode);
+        }
+        
+        // Delete the room - cascade will handle:
+        // - room_players (via ON DELETE CASCADE)
+        // - games (via ON DELETE CASCADE)
+        // - cards (via ON DELETE CASCADE through games)
+        // - game_logs (via ON DELETE CASCADE through games)
+        try {
+          await db.deleteRoom(roomId);
+          console.log(`[Room] Room ${roomCode} deleted - all players kicked/disconnected`);
+        } catch (error) {
+          console.error(`[Room] Failed to delete room ${roomCode}:`, error);
+          throw error;
+        }
+        callback({ success: true });
+        return;
+      }
+
+      // Broadcast updated players list
+      io.to(roomCode).emit('room:updated', {
+        players: formatPlayersForClient(updatedPlayers, player.id)
+      });
+
+      // Broadcast that player left
+      io.to(roomCode).emit('room:playerLeft', {
+        playerId: targetPlayer.public_id,
+        players: formatPlayersForClient(updatedPlayers, player.id)
+      });
+
+      callback({ success: true });
+    } catch (error: any) {
+      console.error('room:kickPlayer error:', error);
+      callback({ error: error.message || 'Failed to kick player' });
+    }
+  });
 }
 
 // Handle player disconnection
@@ -323,30 +409,44 @@ export async function handlePlayerLeaveRoom(
   roomId: string,
   roomCode: string
 ) {
-  // Remove player from room
   await db.leaveRoom(roomId, player.id);
   
-  // Leave socket room
   socket.leave(roomCode);
   
-  // Clear socket data
   socket.data.roomId = null;
   socket.data.roomCode = null;
 
-  // Get room info
   const room = await db.getRoomById(roomId);
   if (!room) return;
 
-  // Get remaining players
   const remainingPlayers = await db.getRoomPlayers(roomId);
 
-  // If room is empty, delete it
   if (remainingPlayers.length === 0) {
-    await db.deleteRoom(roomId);
+    // Get game info before deletion for cleanup
+    const game = await db.getGameByRoomId(roomId);
+    
+    // Clean up in-memory timers and cache
+    if (game) {
+      cleanupRoomData(roomCode, game.id);
+    } else {
+      cleanupRoomData(roomCode);
+    }
+    
+    // Delete the room - cascade will handle:
+    // - room_players (via ON DELETE CASCADE)
+    // - games (via ON DELETE CASCADE)
+    // - cards (via ON DELETE CASCADE through games)
+    // - game_logs (via ON DELETE CASCADE through games)
+    try {
+      await db.deleteRoom(roomId);
+      console.log(`[Room] Room ${roomCode} deleted - all players disconnected`);
+    } catch (error) {
+      console.error(`[Room] Failed to delete room ${roomCode}:`, error);
+      throw error;
+    }
     return;
   }
 
-  // If host left, assign new host
   if (room.host_player_id === player.id) {
     const newHost = remainingPlayers[0];
     await db.updateRoomHost(roomId, newHost.player_id);
@@ -356,7 +456,6 @@ export async function handlePlayerLeaveRoom(
     });
   }
 
-  // Broadcast that player left
   io.to(roomCode).emit('room:playerLeft', {
     playerId: player.publicId,
     players: formatPlayersForClient(remainingPlayers, '')

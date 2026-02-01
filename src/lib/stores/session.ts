@@ -28,7 +28,6 @@ function createSessionStore() {
     async init(nickname?: string): Promise<boolean> {
       if (!browser) return false;
       
-      // Check for existing session
       const savedToken = localStorage.getItem('codenames_token');
       const savedPlayerId = localStorage.getItem('codenames_player_id');
       const savedNickname = localStorage.getItem('codenames_nickname');
@@ -50,12 +49,10 @@ function createSessionStore() {
 
         const data = await response.json();
 
-        // Save to localStorage
         localStorage.setItem('codenames_token', data.token);
         localStorage.setItem('codenames_player_id', data.player.id);
         localStorage.setItem('codenames_nickname', data.player.nickname);
 
-        // Update store
         set({
           token: data.token,
           playerId: data.player.id,
@@ -63,7 +60,6 @@ function createSessionStore() {
           isAuthenticated: true
         });
 
-        // Initialize socket with token
         initSocket(data.token);
 
         return true;
@@ -97,18 +93,15 @@ function createSessionStore() {
 
         const data = await response.json();
 
-        // Update localStorage
         localStorage.setItem('codenames_token', data.token);
         localStorage.setItem('codenames_nickname', data.player.nickname);
 
-        // Update store
         update(s => ({
           ...s,
           token: data.token,
           nickname: data.player.nickname
         }));
 
-        // Reconnect socket with new token
         disconnectSocket();
         initSocket(data.token);
 

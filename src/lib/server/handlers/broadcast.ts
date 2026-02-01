@@ -3,6 +3,7 @@ import type { Game, Card } from '../database.types';
 import type { RoomPlayerWithDetails } from '../db';
 import type { TokenPayload } from '../auth';
 import * as db from '../db';
+import { getTimerState } from './game';
 
 /**
  * Broadcast game state to all players in a room
@@ -18,7 +19,6 @@ export async function broadcastGameState(
   const room = io.sockets.adapter.rooms.get(roomCode);
   if (!room) return;
 
-  // Get logs for this game
   const logs = await db.getGameLogs(game.id);
 
   for (const socketId of room) {
@@ -36,12 +36,14 @@ export async function broadcastGameState(
       type: (canSeeAll || card.revealed || game.winner) ? card.type : 'hidden'
     }));
 
+    // Get timer state for this room
+    const timerState = getTimerState(roomCode);
+    
     socket.emit('game:state', {
       status: game.winner ? 'finished' : 'playing',
       currentTurn: game.current_turn,
       clue: game.clue_word ? { word: game.clue_word, count: game.clue_count } : null,
       guessesRemaining: game.guesses_remaining || 0,
-      // Remaining cards needed to win (counts down)
       scores: calculateRemaining(game),
       winner: game.winner,
       cards: maskedCards.map(c => ({
@@ -56,7 +58,17 @@ export async function broadcastGameState(
         team: p.team,
         role: p.role
       })),
-      log: logs
+      log: logs,
+      timerSettings: timerState?.settings || {
+        spymasterDuration: 120,
+        operativeDuration: 180,
+        firstRoundBonus: 60,
+        enabled: true
+      },
+      teamTimers: timerState?.timers || {
+        red: { timeRemaining: 0, isPaused: false, isFirstRound: true },
+        blue: { timeRemaining: 0, isPaused: false, isFirstRound: true }
+      }
     });
   }
 }

@@ -19,20 +19,17 @@
   let isLoading = $state(false);
   let error = $state<string | null>(null);
 
-  // Load saved nickname and word list
   onMount(async () => {
     const savedNickname = localStorage.getItem('codenames_nickname');
     if (savedNickname) {
       nickname = savedNickname;
     }
 
-    // Load recently used custom words
     const savedCustomWords = localStorage.getItem('codenames_custom_words');
     if (savedCustomWords) {
       customWords = savedCustomWords;
     }
 
-    // Check if word list is already in localStorage
     const savedWordList = localStorage.getItem('codenames_word_list');
     if (savedWordList) {
       try {
@@ -42,14 +39,12 @@
       }
     }
 
-    // If no saved word list, fetch from server
     if (wordList.length === 0 && browser) {
       try {
         const response = await fetch('/words.txt');
         const text = await response.text();
         wordList = text.split('\n').map(w => w.trim()).filter(w => w.length === 6);
         
-        // Save to localStorage for next time
         localStorage.setItem('codenames_word_list', JSON.stringify(wordList));
       } catch (e) {
         console.error('Failed to load words.txt', e);
@@ -74,7 +69,6 @@
       return false;
     }
 
-    // Wait for socket connection
     await new Promise(resolve => setTimeout(resolve, 500));
 
     if (!$socketConnected) {
@@ -83,7 +77,6 @@
       return false;
     }
 
-    // Initialize room store listeners
     room.init();
 
     return true;
@@ -95,15 +88,12 @@
     const sessionOk = await initSession();
     if (!sessionOk) return;
 
-    // Save nickname to localStorage
     localStorage.setItem('codenames_nickname', nickname.trim());
     
-    // Store custom words if provided
     if (customWords.trim()) {
       localStorage.setItem('codenames_custom_words', customWords.trim());
     }
     
-    // Generate room code from word list
     let newCode;
     if (wordList.length > 0) {
       newCode = wordList[Math.floor(Math.random() * wordList.length)].toUpperCase();
@@ -111,10 +101,8 @@
       newCode = Math.random().toString(36).substring(2, 8).toUpperCase();
     }
     
-    // Parse custom words into array
     const parsedCustomWords = customWords.trim().split('\n').map(w => w.trim()).filter(w => w.length > 0);
     
-    // Create room via socket
     const result = await room.create(newCode, parsedCustomWords.length >= 25 ? parsedCustomWords : undefined);
     
     if (!result.success) {
@@ -138,12 +126,10 @@
     const sessionOk = await initSession();
     if (!sessionOk) return;
 
-    // Save nickname
     localStorage.setItem('codenames_nickname', nickname.trim());
 
     const code = roomCode.toUpperCase().trim();
 
-    // First check if room exists (only in browser)
     try {
       const response = await fetch(`/api/room/${code}`);
       if (!response.ok) {
@@ -158,7 +144,6 @@
       return;
     }
 
-    // Join room via socket
     const result = await room.join(code);
     
     if (!result.success) {

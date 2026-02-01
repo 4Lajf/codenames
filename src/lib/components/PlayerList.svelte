@@ -10,7 +10,7 @@
 </script>
 
 <div class="player-list">
-  {#each players as player}
+  {#each players as player (`player-${player.id}-${player.nickname}`)}
     <div class="player">
       {#if getRoleIcon(player)}
         <span class="role">{getRoleIcon(player)}</span>
